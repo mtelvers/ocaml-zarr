@@ -3,5 +3,5 @@
 (library
  (name zarr)
  (public_name zarr)
- (libraries yojson decompress.zl checkseum optint bigarray)
+ (libraries yojson decompress.zl decompress.gz checkseum optint bigarray)
  (preprocess no_preprocessing))

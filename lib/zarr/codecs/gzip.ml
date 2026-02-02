@@ -1,25 +1,8 @@
-(** Gzip codec - zlib/gzip compression using decompress library *)
+(** Gzip codec - gzip compression using decompress library *)
 
 type bigstring = (char, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t
 
-(** Create a bigstring from bytes *)
-let bigstring_of_bytes (b : bytes) : bigstring =
-  let len = Bytes.length b in
-  let bs = Bigarray.Array1.create Bigarray.char Bigarray.c_layout len in
-  for i = 0 to len - 1 do
-    Bigarray.Array1.set bs i (Bytes.get b i)
-  done;
-  bs
-
-(** Create bytes from a bigstring *)
-let bytes_of_bigstring (bs : bigstring) (len : int) : bytes =
-  let b = Bytes.create len in
-  for i = 0 to len - 1 do
-    Bytes.set b i (Bigarray.Array1.get bs i)
-  done;
-  b
-
-(** Compress bytes using zlib deflate *)
+(** Compress bytes using gzip *)
 let compress ~level input =
   let input_len = Bytes.length input in
   if input_len = 0 then Bytes.empty
@@ -51,20 +34,20 @@ let compress ~level input =
     let i_buf = Bigarray.Array1.create Bigarray.char Bigarray.c_layout 0x1000 in
     let o_buf = Bigarray.Array1.create Bigarray.char Bigarray.c_layout 0x1000 in
 
-    Zl.Higher.compress ~level ~w ~q ~refill ~flush i_buf o_buf;
+    (* Use Gz for actual gzip format *)
+    let cfg = Gz.Higher.configuration Gz.Unix (fun () -> Int32.zero) in
+    Gz.Higher.compress ~level ~w ~q ~refill ~flush () cfg i_buf o_buf;
 
     Buffer.to_bytes output
   end
 
-(** Decompress bytes using zlib inflate *)
+(** Decompress bytes using gzip *)
 let decompress input =
   let input_len = Bytes.length input in
   if input_len = 0 then Ok Bytes.empty
   else begin
     try
       let output = Buffer.create (input_len * 4) in
-
-      let allocate bits = De.make_window ~bits in
 
       let input_pos = ref 0 in
       let refill (buf : bigstring) =
@@ -88,8 +71,9 @@ let decompress input =
       let i_buf = Bigarray.Array1.create Bigarray.char Bigarray.c_layout 0x1000 in
       let o_buf = Bigarray.Array1.create Bigarray.char Bigarray.c_layout 0x1000 in
 
-      match Zl.Higher.uncompress ~allocate ~refill ~flush i_buf o_buf with
-      | Ok () -> Ok (Buffer.to_bytes output)
+      (* Use Gz for actual gzip format *)
+      match Gz.Higher.uncompress ~refill ~flush i_buf o_buf with
+      | Ok _metadata -> Ok (Buffer.to_bytes output)
       | Error (`Msg msg) -> Error (`Codec_error ("gzip decompress failed: " ^ msg))
     with
     | Invalid_argument msg -> Error (`Codec_error ("gzip decompress invalid: " ^ msg))

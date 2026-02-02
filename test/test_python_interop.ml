@@ -15,7 +15,7 @@ open Zarr_sync
 (* Module aliases for nested types *)
 module D = Zarr.Ztypes.Dtype
 
-let fixtures_dir = "test/fixtures/python"
+let fixtures_dir = "fixtures/python"
 
 let fixture_exists name =
   Sys.file_exists (Filename.concat fixtures_dir name)

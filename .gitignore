@@ -17,3 +17,9 @@ _opam/
 
 # External specs (separate git repo)
 zarr-specs/
+
+# Python virtual environment
+test/gen_fixtures/.venv/
+
+# Generated Python fixtures (regenerate with generate_fixtures.py)
+test/fixtures/python/
