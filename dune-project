@@ -27,6 +27,7 @@
   (decompress (>= 1.5))
   (checkseum (>= 0.5))
   (optint (>= 0.3))
+  (zstd (>= 0.4))
   (alcotest :with-test)
   (qcheck :with-test)
   (qcheck-alcotest :with-test)))
@@ -54,3 +55,14 @@
   (eio (>= 1.0))
   (eio_main (>= 1.0))
   (alcotest :with-test)))
+
+(package
+ (name zarr-blosc)
+ (synopsis "Blosc codec for Zarr - high-performance meta-compressor")
+ (description
+  "Optional Blosc codec support for the Zarr library. Provides high-performance compression with shuffling using the c-blosc library. Supports multiple internal compressors: lz4, lz4hc, blosclz, zstd, snappy, zlib.")
+ (depends
+  (ocaml (>= 5.1))
+  (dune (>= 3.0))
+  (zarr (= :version))
+  (conf-blosc :build)))

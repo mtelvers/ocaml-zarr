@@ -88,6 +88,7 @@ type codec_spec =
   | Bytes of { endian : Endianness.t option }  (** None means native endianness *)
   | Transpose of { order : int array }
   | Gzip of { level : int }
+  | Zstd of { level : int; checksum : bool }
   | Crc32c
   | Sharding of {
       chunk_shape : int array;

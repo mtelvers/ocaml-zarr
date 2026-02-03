@@ -38,6 +38,9 @@ let build_codec spec dtype chunk_shape =
   | Gzip { level } ->
     BytesToBytes (Codecs.Gzip.create level)
 
+  | Zstd { level; checksum = _ } ->
+    BytesToBytes (Codecs.Zstd.create level)
+
   | Crc32c ->
     BytesToBytes (Codecs.Crc32c.create ())
 
@@ -169,6 +172,11 @@ let rec specs_of_json json_list =
       let level = config |> member "level" |> to_int_option |> Option.value ~default:5 in
       Ok (Gzip { level })
 
+    | "zstd" ->
+      let level = config |> member "level" |> to_int_option |> Option.value ~default:3 in
+      let checksum = config |> member "checksum" |> to_bool_option |> Option.value ~default:false in
+      Ok (Zstd { level; checksum })
+
     | "crc32c" ->
       Ok Crc32c
 
@@ -226,6 +234,15 @@ and spec_to_json = function
     `Assoc [
       ("name", `String "gzip");
       ("configuration", `Assoc [("level", `Int level)])
+    ]
+
+  | Zstd { level; checksum } ->
+    `Assoc [
+      ("name", `String "zstd");
+      ("configuration", `Assoc [
+        ("level", `Int level);
+        ("checksum", `Bool checksum)
+      ])
     ]
 
   | Crc32c ->

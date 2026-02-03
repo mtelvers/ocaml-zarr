@@ -43,12 +43,14 @@ module Chunk_key = Chunk_key
 (** {1 Codecs} *)
 
 module Codec = Codec
+module Codec_intf = Codec_intf
 
 (** Individual codec implementations *)
 module Codecs = struct
   module Bytes_codec = Codecs.Bytes_codec
   module Transpose = Codecs.Transpose
   module Gzip = Codecs.Gzip
+  module Zstd = Codecs.Zstd
   module Crc32c = Codecs.Crc32c
   module Sharding = Codecs.Sharding
 end
@@ -79,6 +81,9 @@ let bytes_codec ?(endian = Endianness.Little) () = Bytes { endian = Some endian 
 
 (** Create a gzip codec specification *)
 let gzip_codec ?(level = 5) () = Gzip { level }
+
+(** Create a zstd codec specification *)
+let zstd_codec ?(level = 3) ?(checksum = false) () = Zstd { level; checksum }
 
 (** Create a crc32c codec specification *)
 let crc32c_codec () = Crc32c

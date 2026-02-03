@@ -159,6 +159,50 @@ let test_transpose_roundtrip () =
     done
   done
 
+(* === Zstd codec tests === *)
+
+let test_zstd_roundtrip () =
+  let input = Bytes.of_string "Hello, World! This is some test data to compress with zstd." in
+  let codec = Codecs.Zstd.create 3 in
+  let compressed = codec.encode input in
+  check bool "compression works" true (Bytes.length compressed > 0);
+  match codec.decode compressed with
+  | Ok decompressed -> check bytes "roundtrip" input decompressed
+  | Error _ -> fail "decompress failed"
+
+let test_zstd_empty () =
+  let input = Bytes.empty in
+  let codec = Codecs.Zstd.create 3 in
+  let compressed = codec.encode input in
+  match codec.decode compressed with
+  | Ok decompressed -> check bytes "empty roundtrip" input decompressed
+  | Error _ -> fail "decompress empty failed"
+
+let test_zstd_levels () =
+  let input = Bytes.of_string (String.make 10000 'a') in
+  let codec1 = Codecs.Zstd.create 1 in
+  let codec19 = Codecs.Zstd.create 19 in
+  let compressed1 = codec1.encode input in
+  let compressed19 = codec19.encode input in
+  check bool "level 19 <= level 1"
+    true (Bytes.length compressed19 <= Bytes.length compressed1)
+
+let test_zstd_large_data () =
+  let input = Bytes.init 100000 (fun i -> Char.chr (i mod 256)) in
+  let codec = Codecs.Zstd.create 3 in
+  let compressed = codec.encode input in
+  match codec.decode compressed with
+  | Ok decompressed -> check bytes "large roundtrip" input decompressed
+  | Error _ -> fail "decompress large failed"
+
+let test_zstd_decode_invalid () =
+  let input = Bytes.of_string "this is not valid zstd data" in
+  let codec = Codecs.Zstd.create 3 in
+  match codec.decode input with
+  | Ok _ -> fail "should fail on invalid data"
+  | Error (`Codec_error _) -> ()
+  | Error _ -> fail "wrong error type"
+
 (* === Codec chain tests === *)
 
 let test_codec_chain_bytes_only () =
@@ -198,6 +242,24 @@ let test_codec_chain_with_gzip () =
       | _ -> fail "expected int32"
     done
 
+let test_codec_chain_with_zstd () =
+  match Codec.build_chain [Zarr.Bytes { endian = Some E.Little }; Zarr.Zstd { level = 3; checksum = false }] D.Int32 [|10|] with
+  | Error _ -> fail "should build"
+  | Ok chain ->
+    let arr = Ndarray.create D.Int32 [|100|] in
+    for i = 0 to 99 do
+      Ndarray.set arr [|i|] (`Int32 (Int32.of_int i))
+    done;
+
+    let encoded = Codec.encode chain arr in
+    let decoded = Codec.decode chain [|100|] D.Int32 encoded in
+
+    for i = 0 to 99 do
+      match Ndarray.get decoded [|i|] with
+      | `Int32 v -> check int (Printf.sprintf "element %d" i) i (Int32.to_int v)
+      | _ -> fail "expected int32"
+    done
+
 let test_codec_chain_no_array_to_bytes () =
   match Codec.build_chain [Zarr.Gzip { level = 5 }] D.Int32 [|10|] with
   | Error (`Codec_error _) -> ()
@@ -216,7 +278,13 @@ let tests = [
   "gzip levels", `Quick, test_gzip_levels;
   "transpose 2d", `Quick, test_transpose_2d;
   "transpose roundtrip", `Quick, test_transpose_roundtrip;
+  "zstd roundtrip", `Quick, test_zstd_roundtrip;
+  "zstd empty", `Quick, test_zstd_empty;
+  "zstd levels", `Quick, test_zstd_levels;
+  "zstd large data", `Quick, test_zstd_large_data;
+  "zstd decode invalid", `Quick, test_zstd_decode_invalid;
   "codec chain bytes only", `Quick, test_codec_chain_bytes_only;
   "codec chain with gzip", `Quick, test_codec_chain_with_gzip;
+  "codec chain with zstd", `Quick, test_codec_chain_with_zstd;
   "codec chain no array->bytes", `Quick, test_codec_chain_no_array_to_bytes;
 ]
