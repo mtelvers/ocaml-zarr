@@ -19,10 +19,7 @@ let get_partial store key ranges =
   | Some bytes ->
     let len = Bytes.length bytes in
     Some (List.map (fun (offset, length) ->
-      let length = match length with
-        | Some l -> l
-        | None -> len - offset
-      in
+      let length = Option.value ~default:(len - offset) length in
       let offset = max 0 (min offset len) in
       let length = max 0 (min length (len - offset)) in
       Bytes.sub bytes offset length
@@ -61,8 +58,7 @@ let erase store key =
 (** Erase all keys with given prefix *)
 let erase_prefix store prefix =
   let keys_to_remove = Hashtbl.fold (fun k _ acc ->
-    if String.length k >= String.length prefix &&
-       String.sub k 0 (String.length prefix) = prefix then
+    if String.starts_with ~prefix k then
       k :: acc
     else
       acc
@@ -76,8 +72,7 @@ let list store =
 (** List all keys with given prefix *)
 let list_prefix store prefix =
   Hashtbl.fold (fun k _ acc ->
-    if String.length k >= String.length prefix &&
-       String.sub k 0 (String.length prefix) = prefix then
+    if String.starts_with ~prefix k then
       k :: acc
     else
       acc
@@ -86,27 +81,22 @@ let list_prefix store prefix =
 (** List directory contents *)
 let list_dir store prefix =
   let prefix_len = String.length prefix in
-  let keys = ref [] in
-  let prefixes = ref [] in
-
-  Hashtbl.iter (fun k _ ->
-    if String.length k >= prefix_len &&
-       String.sub k 0 prefix_len = prefix then begin
-      let rest = String.sub k prefix_len (String.length k - prefix_len) in
-      match String.index_opt rest '/' with
-      | None ->
-        (* Direct key *)
-        keys := k :: !keys
-      | Some idx ->
-        (* Has subdirectory *)
-        let subdir = String.sub rest 0 idx in
-        let full_prefix = prefix ^ subdir ^ "/" in
-        if not (List.mem full_prefix !prefixes) then
-          prefixes := full_prefix :: !prefixes
-    end
-  ) store.data;
-
-  (List.sort String.compare !keys, List.sort String.compare !prefixes)
+  let (keys, prefixes) =
+    Hashtbl.fold (fun k _ (keys, prefixes) ->
+      if String.starts_with ~prefix k then
+        let rest = String.sub k prefix_len (String.length k - prefix_len) in
+        match String.index_opt rest '/' with
+        | None -> (k :: keys, prefixes)
+        | Some idx ->
+          let subdir = String.sub rest 0 idx in
+          let full_prefix = prefix ^ subdir ^ "/" in
+          if List.mem full_prefix prefixes then (keys, prefixes)
+          else (keys, full_prefix :: prefixes)
+      else
+        (keys, prefixes)
+    ) store.data ([], [])
+  in
+  (List.sort String.compare keys, List.sort String.compare prefixes)
 
 (** Clear all data in the store *)
 let clear store =

@@ -10,54 +10,45 @@ module S = Ztypes.Separator
 
 (** Parse array metadata from JSON string *)
 let array_of_json json_str =
+  let ( let* ) = Result.bind in
   try
     let json = Yojson.Safe.from_string json_str in
     let open Yojson.Safe.Util in
 
     (* zarr_format must be 3 *)
     let zarr_format = json |> member "zarr_format" |> to_int in
-    if zarr_format <> 3 then
-      Error (`Invalid_metadata (Printf.sprintf "zarr_format must be 3, got %d" zarr_format))
-    else
+    let* () =
+      if zarr_format <> 3 then
+        Error (`Invalid_metadata (Printf.sprintf "zarr_format must be 3, got %d" zarr_format))
+      else Ok ()
+    in
 
     (* node_type must be "array" *)
     let node_type_str = json |> member "node_type" |> to_string in
-    if node_type_str <> "array" then
-      Error (`Invalid_metadata "node_type must be 'array' for array metadata")
-    else
+    let* () =
+      if node_type_str <> "array" then
+        Error (`Invalid_metadata "node_type must be 'array' for array metadata")
+      else Ok ()
+    in
 
     (* shape *)
     let shape = json |> member "shape" |> to_list |> List.map to_int |> Array.of_list in
 
     (* data_type *)
     let dtype_str = json |> member "data_type" |> to_string in
-    match Data_type.of_string dtype_str with
-    | Error e -> Error e
-    | Ok data_type ->
+    let* data_type = Data_type.of_string dtype_str in
 
     (* chunk_grid *)
-    let chunk_grid_json = json |> member "chunk_grid" in
-    (match Chunk_grid.of_json chunk_grid_json with
-    | Error e -> Error e
-    | Ok chunk_grid ->
+    let* chunk_grid = Chunk_grid.of_json (json |> member "chunk_grid") in
 
     (* chunk_key_encoding *)
-    let chunk_key_json = json |> member "chunk_key_encoding" in
-    (match Chunk_key.of_json chunk_key_json with
-    | Error e -> Error e
-    | Ok chunk_key_encoding ->
+    let* chunk_key_encoding = Chunk_key.of_json (json |> member "chunk_key_encoding") in
 
     (* fill_value *)
-    let fill_value_json = json |> member "fill_value" in
-    (match FV_mod.of_json data_type fill_value_json with
-    | Error e -> Error e
-    | Ok fill_value ->
+    let* fill_value = FV_mod.of_json data_type (json |> member "fill_value") in
 
     (* codecs *)
-    let codecs_json = json |> member "codecs" |> to_list in
-    (match Codec.specs_of_json codecs_json with
-    | Error e -> Error e
-    | Ok codecs ->
+    let* codecs = Codec.specs_of_json (json |> member "codecs" |> to_list) in
 
     (* Verify codec chain has array->bytes (Extension codecs are tolerated
        since we can't know their class at parse time) *)
@@ -65,9 +56,11 @@ let array_of_json json_str =
       | Bytes _ | Sharding _ | Extension _ -> true
       | _ -> false
     ) codecs in
-    if not has_array_to_bytes then
-      Error (`Invalid_metadata "codecs must contain an array->bytes codec (bytes or sharding_indexed)")
-    else
+    let* () =
+      if not has_array_to_bytes then
+        Error (`Invalid_metadata "codecs must contain an array->bytes codec (bytes or sharding_indexed)")
+      else Ok ()
+    in
 
     (* dimension_names (optional) *)
     let dimension_names =
@@ -100,7 +93,7 @@ let array_of_json json_str =
       codecs;
       dimension_names;
       attributes;
-    }))))
+    }
   with
   | Yojson.Safe.Util.Type_error (msg, _) ->
     Error (`Invalid_metadata ("JSON type error: " ^ msg))

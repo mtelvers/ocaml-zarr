@@ -30,25 +30,11 @@ let total_inner_chunks outer_shape inner_shape =
 
 (** Convert inner chunk coordinates to linear index (C-order) *)
 let inner_coords_to_index chunks_per_dim coords =
-  let ndim = Array.length chunks_per_dim in
-  let idx = ref 0 in
-  let stride = ref 1 in
-  for i = ndim - 1 downto 0 do
-    idx := !idx + coords.(i) * !stride;
-    stride := !stride * chunks_per_dim.(i)
-  done;
-  !idx
+  Ndarray.index_to_offset chunks_per_dim coords
 
 (** Convert linear index to inner chunk coordinates (C-order) *)
 let index_to_inner_coords chunks_per_dim idx =
-  let ndim = Array.length chunks_per_dim in
-  let coords = Array.make ndim 0 in
-  let remaining = ref idx in
-  for i = ndim - 1 downto 0 do
-    coords.(i) <- !remaining mod chunks_per_dim.(i);
-    remaining := !remaining / chunks_per_dim.(i)
-  done;
-  coords
+  Ndarray.offset_to_index chunks_per_dim idx
 
 (** Encode bytes through bytes-to-bytes codecs in a chain *)
 let encode_bytes (chain : Codec_intf.codec_chain) (buf : bytes) : bytes =

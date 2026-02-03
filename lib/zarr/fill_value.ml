@@ -204,6 +204,33 @@ let float16_of_float f =
       let mant16 = Int32.to_int (Int32.shift_right_logical mant 13) in
       Int32.to_int sign16 lor (exp16 lsl 10) lor mant16
 
+(** Convert a fill value variant to a float *)
+let float_of_fv = function
+  | FV.Float f -> f
+  | FV.NaN -> Float.nan
+  | FV.Infinity -> Float.infinity
+  | FV.NegInfinity -> Float.neg_infinity
+  | FV.Hex s -> Int32.float_of_bits (Int32.of_string s)
+  | _ -> 0.0
+
+(** Write a float as 4 bytes (IEEE 754 single) with given endianness *)
+let write_f32 endian f =
+  let buf = Bytes.create 4 in
+  let bits = Int32.bits_of_float f in
+  (match endian with
+   | E.Little -> Bytes.set_int32_le buf 0 bits
+   | E.Big -> Bytes.set_int32_be buf 0 bits);
+  buf
+
+(** Write a float as 8 bytes (IEEE 754 double) with given endianness *)
+let write_f64 endian f =
+  let buf = Bytes.create 8 in
+  let bits = Int64.bits_of_float f in
+  (match endian with
+   | E.Little -> Bytes.set_int64_le buf 0 bits
+   | E.Big -> Bytes.set_int64_be buf 0 bits);
+  buf
+
 (** Convert a fill value to bytes with given endianness *)
 let to_bytes dtype endian fv =
   let open Bytes in
@@ -260,86 +287,15 @@ let to_bytes dtype endian fv =
      | E.Little -> set_int64_le buf 0 u
      | E.Big -> set_int64_be buf 0 u);
     buf
-  | D.Float32, FV.Float f ->
-    let buf = create 4 in
-    let bits = Int32.bits_of_float f in
-    (match endian with
-     | E.Little -> set_int32_le buf 0 bits
-     | E.Big -> set_int32_be buf 0 bits);
-    buf
-  | D.Float32, FV.NaN ->
-    let buf = create 4 in
-    let bits = Int32.bits_of_float Float.nan in
-    (match endian with
-     | E.Little -> set_int32_le buf 0 bits
-     | E.Big -> set_int32_be buf 0 bits);
-    buf
-  | D.Float32, FV.Infinity ->
-    let buf = create 4 in
-    let bits = Int32.bits_of_float Float.infinity in
-    (match endian with
-     | E.Little -> set_int32_le buf 0 bits
-     | E.Big -> set_int32_be buf 0 bits);
-    buf
-  | D.Float32, FV.NegInfinity ->
-    let buf = create 4 in
-    let bits = Int32.bits_of_float Float.neg_infinity in
-    (match endian with
-     | E.Little -> set_int32_le buf 0 bits
-     | E.Big -> set_int32_be buf 0 bits);
-    buf
-  | D.Float32, FV.Hex s ->
-    let buf = create 4 in
-    let bits = Int32.of_string s in
-    (match endian with
-     | E.Little -> set_int32_le buf 0 bits
-     | E.Big -> set_int32_be buf 0 bits);
-    buf
-  | D.Float64, FV.Float f ->
-    let buf = create 8 in
-    let bits = Int64.bits_of_float f in
-    (match endian with
-     | E.Little -> set_int64_le buf 0 bits
-     | E.Big -> set_int64_be buf 0 bits);
-    buf
-  | D.Float64, FV.NaN ->
-    let buf = create 8 in
-    let bits = Int64.bits_of_float Float.nan in
-    (match endian with
-     | E.Little -> set_int64_le buf 0 bits
-     | E.Big -> set_int64_be buf 0 bits);
-    buf
-  | D.Float64, FV.Infinity ->
-    let buf = create 8 in
-    let bits = Int64.bits_of_float Float.infinity in
-    (match endian with
-     | E.Little -> set_int64_le buf 0 bits
-     | E.Big -> set_int64_be buf 0 bits);
-    buf
-  | D.Float64, FV.NegInfinity ->
-    let buf = create 8 in
-    let bits = Int64.bits_of_float Float.neg_infinity in
-    (match endian with
-     | E.Little -> set_int64_le buf 0 bits
-     | E.Big -> set_int64_be buf 0 bits);
-    buf
-  | D.Float64, FV.Hex s ->
-    let buf = create 8 in
-    let bits = Int64.of_string s in
-    (match endian with
-     | E.Little -> set_int64_le buf 0 bits
-     | E.Big -> set_int64_be buf 0 bits);
-    buf
+  | D.Float32, (FV.Float _ | FV.NaN | FV.Infinity | FV.NegInfinity | FV.Hex _) ->
+    let f = float_of_fv fv in
+    write_f32 endian f
+  | D.Float64, (FV.Float _ | FV.NaN | FV.Infinity | FV.NegInfinity | FV.Hex _) ->
+    let f = float_of_fv fv in
+    write_f64 endian f
   | D.Float16, _ ->
     (* Float16 needs special handling - convert through float32 *)
-    let f = match fv with
-      | FV.Float f -> f
-      | FV.NaN -> Float.nan
-      | FV.Infinity -> Float.infinity
-      | FV.NegInfinity -> Float.neg_infinity
-      | FV.Hex s -> Int32.float_of_bits (Int32.of_string s)
-      | _ -> 0.0
-    in
+    let f = float_of_fv fv in
     let buf = create 2 in
     let bits = float16_of_float f in
     (match endian with

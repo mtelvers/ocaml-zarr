@@ -41,16 +41,15 @@ let normalize_slice dim_size = function
 
 (** Calculate output shape from slices *)
 let output_shape shape slices =
-  let result = ref [] in
-  List.iteri (fun i slice ->
-    let dim_size = shape.(i) in
-    match normalize_slice dim_size slice with
+  slices
+  |> List.mapi (fun i slice ->
+    match normalize_slice shape.(i) slice with
     | Ok (start, stop, step) ->
       let size = (stop - start + abs step - 1) / abs step in
-      if size > 0 then result := size :: !result
-    | Error _ -> ()
-  ) slices;
-  Array.of_list (List.rev !result)
+      if size > 0 then Some size else None
+    | Error _ -> None)
+  |> List.filter_map Fun.id
+  |> Array.of_list
 
 (** Iterate over all indices in a slice specification *)
 let iter_slices shape slices f =
@@ -79,18 +78,17 @@ let iter_slices shape slices f =
   let rec iterate dim =
     if dim = ndim then
       f (Array.copy current) (Array.copy output_idx)
-    else begin
+    else
       let (start, stop, step) = normalized.(dim) in
-      let out_i = ref 0 in
-      let i = ref start in
-      while (step > 0 && !i < stop) || (step < 0 && !i > stop) do
-        current.(dim) <- !i;
-        output_idx.(dim) <- !out_i;
-        iterate (dim + 1);
-        i := !i + step;
-        incr out_i
-      done
-    end
+      let rec loop i out_i =
+        if (step > 0 && i < stop) || (step < 0 && i > stop) then begin
+          current.(dim) <- i;
+          output_idx.(dim) <- out_i;
+          iterate (dim + 1);
+          loop (i + step) (out_i + 1)
+        end
+      in
+      loop start 0
   in
   iterate 0
 

@@ -54,10 +54,7 @@ let get_partial store key ranges =
     let ic = open_in_bin path in
     let file_len = in_channel_length ic in
     let result = List.map (fun (offset, length) ->
-      let length = match length with
-        | Some l -> l
-        | None -> file_len - offset
-      in
+      let length = Option.value ~default:(file_len - offset) length in
       let offset = max 0 (min offset file_len) in
       let length = max 0 (min length (file_len - offset)) in
       seek_in ic offset;
@@ -145,27 +142,24 @@ let list store =
 (** List all keys with given prefix *)
 let list_prefix store prefix =
   let keys = list store in
-  List.filter (fun k ->
-    String.length k >= String.length prefix &&
-    String.sub k 0 (String.length prefix) = prefix
-  ) keys
+  List.filter (String.starts_with ~prefix) keys
 
 (** List directory contents *)
 let list_dir store prefix =
   let path = key_to_path store prefix in
   if Sys.file_exists path && Sys.is_directory path then begin
     let entries = Sys.readdir path in
-    let keys = ref [] in
-    let prefixes = ref [] in
-    Array.iter (fun entry ->
-      let full_path = Filename.concat path entry in
-      let key = if prefix = "" then entry else prefix ^ entry in
-      if Sys.is_directory full_path then
-        prefixes := (key ^ "/") :: !prefixes
-      else
-        keys := key :: !keys
-    ) entries;
-    (List.sort String.compare !keys, List.sort String.compare !prefixes)
+    let (keys, prefixes) =
+      Array.fold_left (fun (keys, prefixes) entry ->
+        let full_path = Filename.concat path entry in
+        let key = if prefix = "" then entry else prefix ^ entry in
+        if Sys.is_directory full_path then
+          (keys, (key ^ "/") :: prefixes)
+        else
+          (key :: keys, prefixes)
+      ) ([], []) entries
+    in
+    (List.sort String.compare keys, List.sort String.compare prefixes)
   end else
     ([], [])
 

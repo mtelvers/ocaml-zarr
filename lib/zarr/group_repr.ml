@@ -86,25 +86,20 @@ module Make (S : STORE_OPS) = struct
 
     List.sort_uniq String.compare (from_files @ from_dirs)
 
+  (** Get the metadata path for a child node *)
+  let child_meta_path group name =
+    if group.path = "" || group.path = "/" then
+      name ^ "/zarr.json"
+    else
+      group.path ^ "/" ^ name ^ "/zarr.json"
+
   (** Check if a child exists *)
   let child_exists group name =
-    let child_meta_path =
-      if group.path = "" || group.path = "/" then
-        name ^ "/zarr.json"
-      else
-        group.path ^ "/" ^ name ^ "/zarr.json"
-    in
-    S.exists group.store child_meta_path
+    S.exists group.store (child_meta_path group name)
 
   (** Get the type of a child (Array or Group) *)
   let child_type group name =
-    let child_meta_path =
-      if group.path = "" || group.path = "/" then
-        name ^ "/zarr.json"
-      else
-        group.path ^ "/" ^ name ^ "/zarr.json"
-    in
-    match S.get group.store child_meta_path with
+    match S.get group.store (child_meta_path group name) with
     | None -> None
     | Some bytes ->
       let json_str = Bytes.to_string bytes in

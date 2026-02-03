@@ -80,51 +80,52 @@ let build_codec spec dtype chunk_shape =
      | None ->
        failwith ("unknown extension codec: " ^ name))
 
+(** Accumulator for building a codec chain functionally *)
+type chain_acc = {
+  a2a : array_to_array list;
+  a2b : array_to_bytes option;
+  b2b : bytes_to_bytes list;
+  shape : int array;
+}
+
 (** Build a codec chain from a list of codec specifications *)
 let build_chain specs dtype chunk_shape =
-  let array_to_array = ref [] in
-  let array_to_bytes = ref None in
-  let bytes_to_bytes = ref [] in
-
-  let current_shape = ref chunk_shape in
-
-  let error = ref None in
-
-  List.iter (fun spec ->
-    if Option.is_none !error then
-      match (try Ok (build_codec spec dtype !current_shape) with Failure msg -> Error msg) with
-      | Error msg ->
-        error := Some (`Codec_error ("failed to build codec: " ^ msg))
-      | Ok (ArrayToArray codec) ->
-        if Option.is_some !array_to_bytes then
-          error := Some (`Codec_error "invalid codec ordering: array-to-array codec after array-to-bytes")
-        else begin
-          array_to_array := codec :: !array_to_array;
-          current_shape := codec.compute_output_shape !current_shape
-        end
-      | Ok (ArrayToBytes codec) ->
-        if Option.is_some !array_to_bytes then
-          error := Some (`Codec_error "invalid codec ordering: multiple array-to-bytes codecs")
-        else
-          array_to_bytes := Some codec
-      | Ok (BytesToBytes codec) ->
-        if Option.is_none !array_to_bytes then
-          error := Some (`Codec_error "invalid codec ordering: bytes-to-bytes codec before array-to-bytes")
-        else
-          bytes_to_bytes := codec :: !bytes_to_bytes
-  ) specs;
-
-  match !error with
-  | Some e -> Error e
-  | None ->
-    match !array_to_bytes with
-    | None -> Error (`Codec_error "codec chain must contain exactly one array->bytes codec")
-    | Some a2b ->
-      Ok {
-        Codec_intf.array_to_array = List.rev !array_to_array;
-        array_to_bytes = a2b;
-        bytes_to_bytes = List.rev !bytes_to_bytes;
-      }
+  let step acc spec =
+    match (try Ok (build_codec spec dtype acc.shape) with Failure msg -> Error msg) with
+    | Error msg ->
+      Error (`Codec_error ("failed to build codec: " ^ msg))
+    | Ok (ArrayToArray codec) ->
+      if Option.is_some acc.a2b then
+        Error (`Codec_error "invalid codec ordering: array-to-array codec after array-to-bytes")
+      else
+        Ok { acc with a2a = codec :: acc.a2a;
+                      shape = codec.compute_output_shape acc.shape }
+    | Ok (ArrayToBytes codec) ->
+      if Option.is_some acc.a2b then
+        Error (`Codec_error "invalid codec ordering: multiple array-to-bytes codecs")
+      else
+        Ok { acc with a2b = Some codec }
+    | Ok (BytesToBytes codec) ->
+      if Option.is_none acc.a2b then
+        Error (`Codec_error "invalid codec ordering: bytes-to-bytes codec before array-to-bytes")
+      else
+        Ok { acc with b2b = codec :: acc.b2b }
+  in
+  let init = { a2a = []; a2b = None; b2b = []; shape = chunk_shape } in
+  match List.fold_left (fun acc spec ->
+    match acc with
+    | Error _ -> acc
+    | Ok a -> step a spec
+  ) (Ok init) specs with
+  | Error e -> Error e
+  | Ok { a2b = None; _ } ->
+    Error (`Codec_error "codec chain must contain exactly one array->bytes codec")
+  | Ok { a2a; a2b = Some a2b; b2b; _ } ->
+    Ok {
+      Codec_intf.array_to_array = List.rev a2a;
+      array_to_bytes = a2b;
+      bytes_to_bytes = List.rev b2b;
+    }
 
 (* Initialize the forward reference *)
 let () = build_chain_ref := build_chain
