@@ -88,7 +88,10 @@ module Make (S : STORE_OPS) = struct
 
     match S.get arr.store chunk_key with
     | Some bytes ->
-      Codec.decode arr.codec_chain chunk_shape arr.metadata.data_type bytes
+      (match Codec.decode arr.codec_chain chunk_shape arr.metadata.data_type bytes with
+       | Ok arr -> arr
+       | Error (`Codec_error msg) -> failwith ("chunk decode error: " ^ msg)
+       | Error _ -> failwith "chunk decode error")
     | None ->
       (* Return chunk filled with fill value *)
       let chunk = Ndarray.create arr.metadata.data_type chunk_shape in

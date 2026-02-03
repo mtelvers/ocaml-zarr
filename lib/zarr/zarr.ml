@@ -44,6 +44,7 @@ module Chunk_key = Chunk_key
 
 module Codec = Codec
 module Codec_intf = Codec_intf
+module Codec_registry = Codec_registry
 
 (** Individual codec implementations *)
 module Codecs = struct

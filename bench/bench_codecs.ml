@@ -144,7 +144,7 @@ let bench_codec_chain () =
      time_it "chain: bytes only encode" 1000 (fun () -> Codec.encode chain arr);
      let encoded = Codec.encode chain arr in
      time_it "chain: bytes only decode" 1000 (fun () ->
-       Codec.decode chain [|100; 100|] Float64 encoded));
+       ignore (Codec.decode chain [|100; 100|] Float64 encoded)));
 
   (* Bytes + gzip *)
   (match Codec.build_chain [Bytes { endian = Some Little }; Gzip { level = 5 }] Float64 [|100; 100|] with
@@ -153,7 +153,7 @@ let bench_codec_chain () =
      time_it "chain: bytes+gzip encode" 100 (fun () -> Codec.encode chain arr);
      let encoded = Codec.encode chain arr in
      time_it "chain: bytes+gzip decode" 100 (fun () ->
-       Codec.decode chain [|100; 100|] Float64 encoded))
+       ignore (Codec.decode chain [|100; 100|] Float64 encoded)))
 
 (** {2 Array Operation Benchmarks} *)
 

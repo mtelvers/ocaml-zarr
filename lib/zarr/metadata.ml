@@ -59,9 +59,10 @@ let array_of_json json_str =
     | Error e -> Error e
     | Ok codecs ->
 
-    (* Verify codec chain has array->bytes *)
+    (* Verify codec chain has array->bytes (Extension codecs are tolerated
+       since we can't know their class at parse time) *)
     let has_array_to_bytes = List.exists (function
-      | Bytes _ | Sharding _ -> true
+      | Bytes _ | Sharding _ | Extension _ -> true
       | _ -> false
     ) codecs in
     if not has_array_to_bytes then

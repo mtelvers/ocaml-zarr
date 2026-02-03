@@ -96,6 +96,7 @@ type codec_spec =
       index_codecs : codec_spec list;
       index_location : Index_location.t;
     }
+  | Extension of { name : string; config : Yojson.Safe.t }
 
 (** Array metadata as defined by Zarr v3 spec *)
 type array_metadata = {

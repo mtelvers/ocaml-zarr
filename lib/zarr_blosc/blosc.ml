@@ -70,3 +70,42 @@ let create ~cname ~clevel ~shuffle ~typesize ~blocksize : Zarr.Codec_intf.bytes_
   decode = (fun bytes -> decompress bytes);
   compute_encoded_size = (fun _ -> None);
 }
+
+(** Create a codec_spec for blosc with the given parameters *)
+let codec_spec ~cname ~clevel ~shuffle ~typesize ~blocksize =
+  let open Zarr.Ztypes in
+  Extension { name = "blosc";
+    config = `Assoc [
+      ("cname", `String (compressor_to_string cname));
+      ("clevel", `Int clevel);
+      ("shuffle", `String (shuffle_to_string shuffle));
+      ("typesize", `Int typesize);
+      ("blocksize", `Int blocksize);
+    ]
+  }
+
+(** Build a blosc codec from JSON configuration and dtype *)
+let build_from_json config _dtype _chunk_shape =
+  let open Yojson.Safe.Util in
+  try
+    let cname_str = config |> member "cname" |> to_string_option |> Option.value ~default:"lz4" in
+    let clevel = config |> member "clevel" |> to_int_option |> Option.value ~default:5 in
+    let shuffle_str = config |> member "shuffle" |> to_string_option |> Option.value ~default:"noshuffle" in
+    let typesize = config |> member "typesize" |> to_int_option |> Option.value ~default:1 in
+    let blocksize = config |> member "blocksize" |> to_int_option |> Option.value ~default:0 in
+    match compressor_of_string cname_str, shuffle_of_string shuffle_str with
+    | Ok cname, Ok shuffle ->
+      let codec = create ~cname ~clevel ~shuffle ~typesize ~blocksize in
+      Ok (Zarr.Codec_registry.BytesToBytes codec)
+    | Error e, _ -> Error e
+    | _, Error e -> Error e
+  with
+  | Yojson.Safe.Util.Type_error (msg, _) ->
+    Error (`Codec_error ("blosc config error: " ^ msg))
+
+(** Register the blosc codec with the codec registry *)
+let register () =
+  Zarr.Codec_registry.register "blosc" build_from_json
+
+(** Auto-register at link time *)
+let () = register ()

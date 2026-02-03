@@ -61,7 +61,9 @@ let decode_bytes (chain : Codec_intf.codec_chain) (buf : bytes) : bytes =
   List.fold_right (fun (codec : Codec_intf.bytes_to_bytes) b ->
     match codec.decode b with
     | Ok decoded -> decoded
-    | Error _ -> b
+    | Error (`Codec_error msg) -> failwith ("sharding bytes-to-bytes decode error: " ^ msg)
+    | Error `Checksum_mismatch -> failwith "sharding checksum mismatch"
+    | Error _ -> failwith "sharding bytes-to-bytes decode error"
   ) chain.bytes_to_bytes buf
 
 (** Encode an ndarray through a codec chain *)
@@ -85,7 +87,9 @@ let decode_chain (chain : Codec_intf.codec_chain) (shape : int array) (dtype : D
   let bytes = List.fold_right (fun (codec : Codec_intf.bytes_to_bytes) b ->
     match codec.decode b with
     | Ok decoded -> decoded
-    | Error _ -> b
+    | Error (`Codec_error msg) -> failwith ("sharding inner decode error: " ^ msg)
+    | Error `Checksum_mismatch -> failwith "sharding inner checksum mismatch"
+    | Error _ -> failwith "sharding inner decode error"
   ) chain.bytes_to_bytes bytes in
 
   (* Calculate intermediate shape after a2a codecs *)

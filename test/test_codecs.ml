@@ -7,6 +7,13 @@ open Zarr
 module D = Zarr.Ztypes.Dtype
 module E = Zarr.Ztypes.Endianness
 
+(* Helper to unwrap decode result *)
+let decode_ok chain shape dtype bytes =
+  match Codec.decode chain shape dtype bytes with
+  | Ok arr -> arr
+  | Error (`Codec_error msg) -> Alcotest.fail ("decode error: " ^ msg)
+  | Error _ -> Alcotest.fail "decode error"
+
 (* === Bytes codec tests === *)
 
 let test_bytes_little_endian_int32 () =
@@ -215,7 +222,7 @@ let test_codec_chain_bytes_only () =
     Ndarray.set arr [|2|] (`Int32 3l);
 
     let encoded = Codec.encode chain arr in
-    let decoded = Codec.decode chain [|3|] D.Int32 encoded in
+    let decoded = decode_ok chain [|3|] D.Int32 encoded in
 
     check int "first" 1
       (match Ndarray.get decoded [|0|] with `Int32 i -> Int32.to_int i | _ -> -1);
@@ -234,7 +241,7 @@ let test_codec_chain_with_gzip () =
     done;
 
     let encoded = Codec.encode chain arr in
-    let decoded = Codec.decode chain [|100|] D.Int32 encoded in
+    let decoded = decode_ok chain [|100|] D.Int32 encoded in
 
     for i = 0 to 99 do
       match Ndarray.get decoded [|i|] with
@@ -252,7 +259,7 @@ let test_codec_chain_with_zstd () =
     done;
 
     let encoded = Codec.encode chain arr in
-    let decoded = Codec.decode chain [|100|] D.Int32 encoded in
+    let decoded = decode_ok chain [|100|] D.Int32 encoded in
 
     for i = 0 to 99 do
       match Ndarray.get decoded [|i|] with
@@ -265,6 +272,50 @@ let test_codec_chain_no_array_to_bytes () =
   | Error (`Codec_error _) -> ()
   | Ok _ -> fail "should fail without array->bytes"
   | Error _ -> fail "wrong error type"
+
+(* === Chain ordering error tests === *)
+
+let test_codec_chain_a2a_after_a2b () =
+  (* Transpose (a2a) after Bytes (a2b) should fail *)
+  match Codec.build_chain
+    [Zarr.Bytes { endian = Some E.Little }; Zarr.Transpose { order = [|0|] }]
+    D.Int32 [|10|] with
+  | Error (`Codec_error msg) ->
+    check bool "mentions ordering" true (String.length msg > 0)
+  | Ok _ -> fail "should fail: a2a after a2b"
+  | Error _ -> fail "wrong error type"
+
+let test_codec_chain_multiple_a2b () =
+  (* Two Bytes (a2b) codecs should fail *)
+  match Codec.build_chain
+    [Zarr.Bytes { endian = Some E.Little }; Zarr.Bytes { endian = Some E.Big }]
+    D.Int32 [|10|] with
+  | Error (`Codec_error msg) ->
+    check bool "mentions ordering" true (String.length msg > 0)
+  | Ok _ -> fail "should fail: multiple a2b"
+  | Error _ -> fail "wrong error type"
+
+let test_codec_chain_b2b_before_a2b () =
+  (* Gzip (b2b) before Bytes (a2b) should fail *)
+  match Codec.build_chain
+    [Zarr.Gzip { level = 5 }; Zarr.Bytes { endian = Some E.Little }]
+    D.Int32 [|10|] with
+  | Error (`Codec_error msg) ->
+    check bool "mentions ordering" true (String.length msg > 0)
+  | Ok _ -> fail "should fail: b2b before a2b"
+  | Error _ -> fail "wrong error type"
+
+(* === Decode error propagation tests === *)
+
+let test_decode_corrupt_gzip () =
+  match Codec.build_chain [Zarr.Bytes { endian = Some E.Little }; Zarr.Gzip { level = 5 }] D.Int32 [|10|] with
+  | Error _ -> fail "should build"
+  | Ok chain ->
+    let corrupt_data = Bytes.of_string "this is not valid gzip data at all!" in
+    match Codec.decode chain [|10|] D.Int32 corrupt_data with
+    | Ok _ -> fail "should fail on corrupt gzip data"
+    | Error (`Codec_error _) -> ()
+    | Error _ -> fail "wrong error type"
 
 let tests = [
   "bytes little endian int32", `Quick, test_bytes_little_endian_int32;
@@ -287,4 +338,8 @@ let tests = [
   "codec chain with gzip", `Quick, test_codec_chain_with_gzip;
   "codec chain with zstd", `Quick, test_codec_chain_with_zstd;
   "codec chain no array->bytes", `Quick, test_codec_chain_no_array_to_bytes;
+  "chain ordering: a2a after a2b", `Quick, test_codec_chain_a2a_after_a2b;
+  "chain ordering: multiple a2b", `Quick, test_codec_chain_multiple_a2b;
+  "chain ordering: b2b before a2b", `Quick, test_codec_chain_b2b_before_a2b;
+  "decode error: corrupt gzip", `Quick, test_decode_corrupt_gzip;
 ]
