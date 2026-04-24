@@ -65,7 +65,7 @@ let decompress input =
   end
 
 (** Create a blosc codec with specified parameters *)
-let create ~cname ~clevel ~shuffle ~typesize ~blocksize : Zarr.Codec_intf.bytes_to_bytes = {
+let create ~cname ~clevel ~shuffle ~typesize ~blocksize : Zarr.Codec.bytes_to_bytes = {
   encode = (fun bytes -> compress ~cname ~clevel ~shuffle ~typesize ~blocksize bytes);
   decode = (fun bytes -> decompress bytes);
   compute_encoded_size = (fun _ -> None);
