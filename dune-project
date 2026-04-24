@@ -65,4 +65,4 @@
   (ocaml (>= 5.1))
   (dune (>= 3.0))
   (zarr (= :version))
-  (conf-blosc :build)))
+  conf-blosc))
