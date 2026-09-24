@@ -109,6 +109,18 @@ let test_reject_missing_array_to_bytes () =
   | Ok _ -> fail "should reject missing array->bytes codec"
   | Error _ -> fail "wrong error type"
 
+let test_bytes_without_configuration () =
+  let json = {| {"zarr_format": 3, "node_type": "array", "shape": [10], "data_type": "uint8",
+                 "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [10]}},
+                 "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
+                 "codecs": [{"name": "bytes"}],
+                 "fill_value": 0} |} in
+  match Metadata.array_of_json json with
+  | Ok { codecs = [Zarr.Bytes { endian = None }]; _ } -> ()
+  | Ok _ -> fail "expected a single bytes codec with no endian"
+  | Error (`Invalid_metadata msg) -> fail ("failed to parse: " ^ msg)
+  | Error _ -> fail "wrong error type"
+
 let test_parse_group_metadata () =
   let json = {| {"zarr_format": 3, "node_type": "group", "attributes": {"foo": "bar"}} |} in
   match Metadata.group_of_json json with
@@ -151,6 +163,7 @@ let tests = [
   "reject zarr_format 2", `Quick, test_reject_zarr_format_2;
   "reject node_type group", `Quick, test_reject_node_type_group;
   "reject missing array->bytes", `Quick, test_reject_missing_array_to_bytes;
+  "bytes without configuration", `Quick, test_bytes_without_configuration;
   "parse group metadata", `Quick, test_parse_group_metadata;
   "array roundtrip", `Quick, test_array_roundtrip;
   "group roundtrip", `Quick, test_group_roundtrip;

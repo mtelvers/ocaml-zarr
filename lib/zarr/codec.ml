@@ -181,7 +181,10 @@ let rec specs_of_json json_list =
   let open Yojson.Safe.Util in
   let parse_one json =
     let name = json |> member "name" |> to_string in
-    let config = json |> member "configuration" in
+    let config = match json |> member "configuration" with
+      | `Null -> `Assoc []
+      | c -> c
+    in
     match name with
     | "bytes" ->
       let endian = match config |> member "endian" |> to_string_option with
@@ -223,7 +226,6 @@ let rec specs_of_json json_list =
 
     | name ->
       if Codec_registry.is_registered name then
-        let config = if config = `Null then `Assoc [] else config in
         Ok (Extension { name; config })
       else
         Error (`Codec_error ("unsupported codec: " ^ name))
