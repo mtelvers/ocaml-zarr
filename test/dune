@@ -1,5 +1,8 @@
+; The suite links zarr_sync, so it belongs to that package: with a package
+; field dune leaves it out of `dune build -p <other-package> @runtest`.
 (test
  (name test_runner)
+ (package zarr-sync)
  (libraries
    zarr
    zarr_sync
