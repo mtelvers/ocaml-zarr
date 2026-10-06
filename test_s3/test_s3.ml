@@ -18,6 +18,24 @@ let ramp shape =
   Zarr.Ndarray.init Float32 shape (fun idx ->
     `Float (Float.of_int (Array.fold_left (fun acc i -> acc * 100 + i) 0 idx)))
 
+(* A 16 MiB shard through a store with a 1 MiB multipart threshold and 5 MiB
+   parts, so that set goes through the multipart path (4 parts). *)
+let test_multipart_shard client bucket () =
+  let store = Store.create client ~bucket ~prefix:"zarr-test/mp"
+      ~multipart_threshold:(1024 * 1024) ~part_size:(5 * 1024 * 1024) in
+  let codecs = [ Zarr.sharding_codec ~chunk_shape:[|256; 2048|] ~codecs:[Zarr.bytes_codec ()] () ] in
+  let arr = match Arr.create store ~path:"big" ~shape:[|2048; 2048|] ~chunks:[|2048; 2048|]
+                    ~dtype:Float32 ~codecs () with
+    | Ok a -> a | Error _ -> fail "create array"
+  in
+  let data = Zarr.Ndarray.init Float32 [|2048; 2048|] (fun idx -> `Float (Float.of_int (idx.(0) * 7 + idx.(1)))) in
+  Arr.set_slice arr [Zarr.All; Zarr.All] data;
+  (match or_fail "get" (Store.get store "big/c/0/0") with
+   | Some shard -> check bool "shard is 16 MiB plus index" true (Bytes.length shard > 16 * 1024 * 1024)
+   | None -> fail "shard missing");
+  check bool "multipart roundtrip" true (Zarr.Ndarray.equal data (Arr.get_slice arr [Zarr.All; Zarr.All]));
+  or_fail "clean" (Store.erase_prefix store "")
+
 let tests store =
   let test_store_ops () =
     or_fail "set" (Store.set store "k/a" (Bytes.of_string "hello"));
@@ -100,5 +118,6 @@ let () =
      | Error e -> failf "bucket_exists: %a" S3.Client.pp_error e);
     let store = Store.create client ~bucket ~prefix:"zarr-test" in
     or_fail "clean" (Store.erase_prefix store "");
-    Alcotest.run ~and_exit:false "zarr-s3" [ ("s3", tests store) ];
+    Alcotest.run ~and_exit:false "zarr-s3"
+      [ ("s3", tests store @ [ "multipart shard", `Quick, test_multipart_shard client bucket ]) ];
     or_fail "clean" (Store.erase_prefix store "")
