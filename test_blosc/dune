@@ -1,4 +1,6 @@
 (test
  (name test_blosc)
  (package zarr-blosc)
- (libraries zarr zarr_blosc alcotest))
+ (libraries zarr zarr_sync zarr_blosc alcotest)
+ (deps
+  (source_tree fixtures)))

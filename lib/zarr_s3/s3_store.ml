@@ -88,9 +88,16 @@ let get_partial t key ranges =
 
 let exists t key = Result.map Option.is_some (head t key)
 
+(** One PUT of the whole value.  The bytes are handed to the client without
+    copying ([value] is not used again, so the string view is safe), but a
+    shard still travels as a single object: a transport failure re-sends all
+    of it, and the 5 GiB single-PUT limit applies.  Multipart upload from
+    memory needs an [S3.Client] entry point that takes a string or flow; the
+    client's multipart path currently only reads from a file. *)
 let set t key value =
   Result.map ignore
-    (S3.Client.put_string t.client ~bucket:t.bucket ~key:(object_key t key) (Bytes.to_string value))
+    (S3.Client.put_string t.client ~bucket:t.bucket ~key:(object_key t key)
+       (Bytes.unsafe_to_string value))
 
 (** S3 objects are immutable, so partial writes are read-modify-write. *)
 let set_partial t updates =

@@ -194,8 +194,39 @@ let test_blosc_json_roundtrip () =
       check string "extension name" "blosc" n
     | _ -> fail "expected Extension variant"
 
+(* === Byte identity with zarr-python's Blosc shards === *)
+
+(* Fixtures written by zarr-python 3 / numcodecs (c-blosc 1.21.7, threaded
+   context) with the codec configuration of the published Tessera store:
+   int8 embeddings with zstd-3 bitshuffle, float32 scales with zstd-3 shuffle,
+   each with one all-fill inner chunk. *)
+let reencode_fixture ~dir ~path ~key ~shape ~dtype () =
+  let open Zarr in
+  let open Zarr_sync in
+  if not (Sys.file_exists dir) then Alcotest.skip ();
+  let store = Filesystem_store.create dir in
+  match Filesystem_array.open_ store ~path with
+  | Error _ -> fail "should open fixture"
+  | Ok arr ->
+    let original = match Filesystem_store.get store key with Some b -> b | None -> fail "shard missing" in
+    let decoded = match Codec.decode arr.codec_chain shape dtype original with
+      | Ok d -> d | Error _ -> fail "decode" in
+    check bytes "re-encoded shard equals zarr-python's" original (Codec.encode arr.codec_chain decoded)
+
+let test_reencode_int8_bitshuffle () =
+  reencode_fixture ~dir:"fixtures/sharded_blosc_int8" ~path:"emb" ~key:"emb/c/0/0/0/0"
+    ~shape:[|1; 128; 64; 64|] ~dtype:Zarr.Ztypes.Dtype.Int8 ()
+
+let test_reencode_float32_shuffle () =
+  reencode_fixture ~dir:"fixtures/sharded_blosc_float32" ~path:"scales" ~key:"scales/c/0/0/0"
+    ~shape:[|1; 64; 64|] ~dtype:Zarr.Ztypes.Dtype.Float32 ()
+
 let () =
   run "zarr-blosc" [
+    "python-identity", [
+      "int8 bitshuffle zstd shard", `Quick, test_reencode_int8_bitshuffle;
+      "float32 shuffle zstd shard", `Quick, test_reencode_float32_shuffle;
+    ];
     "blosc", [
       "roundtrip", `Quick, test_blosc_roundtrip;
       "shuffle", `Quick, test_blosc_shuffle;
