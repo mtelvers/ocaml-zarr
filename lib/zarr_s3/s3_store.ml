@@ -138,22 +138,15 @@ let erase_prefix t prefix =
   Eio.Fiber.List.map ~max_fibers:t.delete_concurrency (erase t) keys
   |> all |> Result.map ignore
 
-(** Direct children of a prefix.  The client lists without a delimiter, so this
-    walks every object under the prefix and groups them; on a large array
-    prefix that is one request per 1000 chunks. *)
+(** Direct children of a prefix, from a delimiter listing: one request per
+    1000 children, however many objects lie beneath them. *)
 let list_dir t prefix =
-  let full = object_key t prefix in
-  let n = String.length full in
   let* keys, dirs =
-    S3.Client.fold_pages t.client ~bucket:t.bucket ~prefix:full ~init:([], [])
+    S3.Client.fold_pages t.client ~bucket:t.bucket ~prefix:(object_key t prefix) ~delimiter:"/"
+      ~init:([], [])
       ~f:(fun (keys, dirs) page ->
-        List.fold_left (fun (keys, dirs) (e : S3.Client.entry) ->
-          match String.index_from_opt e.key n '/' with
-          | None -> (strip_prefix t e.key :: keys, dirs)
-          | Some i ->
-            let dir = strip_prefix t (String.sub e.key 0 (i + 1)) in
-            (keys, if List.mem dir dirs then dirs else dir :: dirs)
-        ) (keys, dirs) page.objects)
+        ( List.rev_append (List.map (fun (e : S3.Client.entry) -> strip_prefix t e.key) page.objects) keys,
+          List.rev_append (List.map (strip_prefix t) page.common_prefixes) dirs ))
       ()
   in
   Ok (List.sort String.compare keys, List.sort String.compare dirs)

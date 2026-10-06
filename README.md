@@ -188,7 +188,8 @@ match Zarr_s3.Array.open_ store ~path:"embeddings" with
 ```
 
 Reads of whole objects go through `get_string`, byte ranges through HTTP
-range requests, and `list_dir` groups a prefix listing client-side.
+range requests, shards above 16 MiB are uploaded in parts, and `list_dir`
+is a single delimiter listing.
 
 ### Blosc codec via extension registry
 
