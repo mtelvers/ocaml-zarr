@@ -1,288 +1,176 @@
-(** Sharding codec - stores multiple inner chunks in a single shard *)
+(** Sharding codec ([sharding_indexed]): stores a grid of inner chunks, each
+    encoded with its own codec chain, in one shard object followed (or
+    preceded) by an index of [(offset, nbytes)] pairs. *)
 
 module D = Ztypes.Dtype
-module E = Ztypes.Endianness
 module IL = Ztypes.Index_location
 
-(** Marker for empty chunks: 2^64 - 1 = -1 in signed representation *)
+(** Marker for an absent inner chunk: offset and nbytes both [2^64 - 1]. *)
 let empty_marker = Int64.minus_one
 
-(** Shard index entry *)
-type index_entry = {
-  offset : int64;
-  nbytes : int64;
-}
+type index_entry = { offset : int64; nbytes : int64 }
 
-(** Check if an index entry represents an empty chunk *)
+let empty_entry = { offset = empty_marker; nbytes = empty_marker }
+
 let is_empty_entry entry =
   Int64.equal entry.offset empty_marker && Int64.equal entry.nbytes empty_marker
 
-(** Calculate the number of inner chunks per shard dimension *)
+(** Number of inner chunks along each axis of a shard. *)
 let inner_chunks_per_shard outer_shape inner_shape =
-  Array.mapi (fun i outer_dim ->
-    (outer_dim + inner_shape.(i) - 1) / inner_shape.(i)
-  ) outer_shape
+  Array.mapi (fun i outer -> (outer + inner_shape.(i) - 1) / inner_shape.(i)) outer_shape
 
-(** Calculate total number of inner chunks in a shard *)
+(** Total number of inner chunks in a shard. *)
 let total_inner_chunks outer_shape inner_shape =
-  let per_dim = inner_chunks_per_shard outer_shape inner_shape in
-  Array.fold_left ( * ) 1 per_dim
+  Array.fold_left ( * ) 1 (inner_chunks_per_shard outer_shape inner_shape)
 
-(** Convert inner chunk coordinates to linear index (C-order) *)
-let inner_coords_to_index chunks_per_dim coords =
-  Ndarray.index_to_offset chunks_per_dim coords
+let inner_coords_to_index = Ndarray.index_to_offset
+let index_to_inner_coords = Ndarray.offset_to_index
 
-(** Convert linear index to inner chunk coordinates (C-order) *)
-let index_to_inner_coords chunks_per_dim idx =
-  Ndarray.offset_to_index chunks_per_dim idx
+(** Check that the inner chunk shape evenly divides the shard shape, as the
+    specification requires. *)
+let validate ~outer_chunk_shape ~inner_chunk_shape =
+  if Array.length inner_chunk_shape <> Array.length outer_chunk_shape then
+    Error (`Codec_error "sharding: inner chunk_shape has a different rank from the shard shape")
+  else
+    match Array.to_list (Array.mapi (fun i inner -> (i, inner, outer_chunk_shape.(i))) inner_chunk_shape)
+          |> List.find_opt (fun (_, inner, outer) -> inner <= 0 || outer mod inner <> 0) with
+    | Some (i, inner, outer) ->
+      Error (`Codec_error (Printf.sprintf
+        "sharding: inner chunk shape %d does not divide shard shape %d on axis %d" inner outer i))
+    | None -> Ok ()
 
-(** Encode bytes through bytes-to-bytes codecs in a chain *)
-let encode_bytes (chain : Codec_intf.codec_chain) (buf : bytes) : bytes =
-  List.fold_left (fun b (codec : Codec_intf.bytes_to_bytes) ->
-    codec.encode b
-  ) buf chain.bytes_to_bytes
+(** The linear (C-order) indices of the inner chunks in Morton (Z-curve)
+    order, which is the order zarr-python lays chunk data out in a shard.
+    Following it keeps shards byte-identical with zarr-python's.  This is the
+    compressed Morton code of zarr-python's [morton_order_iter]: axis 0 takes
+    the least significant bit, and axes that have run out of bits are skipped. *)
+let morton_order dims =
+  let ndim = Array.length dims in
+  let rec ceil_log2 c acc = if 1 lsl acc >= c then acc else ceil_log2 c (acc + 1) in
+  let bits = Array.map (fun c -> ceil_log2 c 0) dims in
+  let max_bits = Array.fold_left max 0 bits in
+  let n = Array.fold_left ( * ) 1 dims in
+  let order = Array.make n 0 in
+  let count = ref 0 and z = ref 0 in
+  let coords = Array.make ndim 0 in
+  while !count < n do
+    Array.fill coords 0 ndim 0;
+    let input_bit = ref 0 in
+    for coord_bit = 0 to max_bits - 1 do
+      for dim = 0 to ndim - 1 do
+        if coord_bit < bits.(dim) then begin
+          coords.(dim) <- coords.(dim) lor (((!z lsr !input_bit) land 1) lsl coord_bit);
+          incr input_bit
+        end
+      done
+    done;
+    if Array.for_all2 (fun c d -> c < d) coords dims then begin
+      order.(!count) <- Ndarray.index_to_offset dims coords;
+      incr count
+    end;
+    incr z
+  done;
+  order
 
-(** Decode bytes through bytes-to-bytes codecs in a chain (reverse order) *)
-let decode_bytes (chain : Codec_intf.codec_chain) (buf : bytes) : bytes =
-  List.fold_right (fun (codec : Codec_intf.bytes_to_bytes) b ->
-    match codec.decode b with
-    | Ok decoded -> decoded
-    | Error (`Codec_error msg) -> failwith ("sharding bytes-to-bytes decode error: " ^ msg)
-    | Error `Checksum_mismatch -> failwith "sharding checksum mismatch"
-    | Error _ -> failwith "sharding bytes-to-bytes decode error"
-  ) chain.bytes_to_bytes buf
+(** Serialise the index and run it through the index codec chain. *)
+let encode_index index_chain entries =
+  let buf = Bytes.create (Array.length entries * 16) in
+  Array.iteri (fun i e ->
+    Bytes.set_int64_le buf (i * 16) e.offset;
+    Bytes.set_int64_le buf (i * 16 + 8) e.nbytes
+  ) entries;
+  Codec_intf.encode_bytes index_chain buf
 
-(** Encode an ndarray through a codec chain *)
-let encode_chain (chain : Codec_intf.codec_chain) (arr : Ndarray.t) : bytes =
-  (* Apply array-to-array codecs *)
-  let arr = List.fold_left (fun a (codec : Codec_intf.array_to_array) ->
-    codec.encode a
-  ) arr chain.array_to_array in
+(** Decode an index; entries beyond the decoded data read as empty. *)
+let decode_index index_chain num_inner_chunks bytes =
+  let decoded = Codec_intf.decode_bytes index_chain bytes in
+  let available = Bytes.length decoded / 16 in
+  Array.init num_inner_chunks (fun i ->
+    if i < available then
+      { offset = Bytes.get_int64_le decoded (i * 16);
+        nbytes = Bytes.get_int64_le decoded (i * 16 + 8) }
+    else empty_entry)
 
-  (* Apply array-to-bytes codec *)
-  let bytes = chain.array_to_bytes.encode arr in
+(** Create a sharding codec from pre-built inner and index codec chains.
 
-  (* Apply bytes-to-bytes codecs *)
-  List.fold_left (fun b (codec : Codec_intf.bytes_to_bytes) ->
-    codec.encode b
-  ) bytes chain.bytes_to_bytes
-
-(** Decode bytes through a codec chain to an ndarray *)
-let decode_chain (chain : Codec_intf.codec_chain) (shape : int array) (dtype : D.t) (bytes : bytes) : Ndarray.t =
-  (* Apply bytes-to-bytes codecs in reverse *)
-  let bytes = List.fold_right (fun (codec : Codec_intf.bytes_to_bytes) b ->
-    match codec.decode b with
-    | Ok decoded -> decoded
-    | Error (`Codec_error msg) -> failwith ("sharding inner decode error: " ^ msg)
-    | Error `Checksum_mismatch -> failwith "sharding inner checksum mismatch"
-    | Error _ -> failwith "sharding inner decode error"
-  ) chain.bytes_to_bytes bytes in
-
-  (* Calculate intermediate shape after a2a codecs *)
-  let intermediate_shape = List.fold_left (fun s (codec : Codec_intf.array_to_array) ->
-    codec.compute_output_shape s
-  ) shape chain.array_to_array in
-
-  (* Apply array-to-bytes codec *)
-  let arr = chain.array_to_bytes.decode intermediate_shape dtype bytes in
-
-  (* Apply array-to-array codecs in reverse *)
-  List.fold_right (fun (codec : Codec_intf.array_to_array) a ->
-    codec.decode a
-  ) chain.array_to_array arr
-
-(** Encode an index to bytes *)
-let encode_index index_entries index_chain =
-  let n = Array.length index_entries in
-  let buf = Bytes.create (n * 16) in  (* 8 bytes offset + 8 bytes nbytes *)
-  Array.iteri (fun i entry ->
-    Bytes.set_int64_le buf (i * 16) entry.offset;
-    Bytes.set_int64_le buf (i * 16 + 8) entry.nbytes
-  ) index_entries;
-  encode_bytes index_chain buf
-
-(** Decode an index from bytes *)
-let decode_index bytes index_chain num_inner_chunks =
-  let decoded_bytes = decode_bytes index_chain bytes in
-  let n = min (Bytes.length decoded_bytes / 16) num_inner_chunks in
-  Array.init n (fun i ->
-    {
-      offset = Bytes.get_int64_le decoded_bytes (i * 16);
-      nbytes = Bytes.get_int64_le decoded_bytes (i * 16 + 8);
-    }
-  )
-
-(** Create a sharding codec with pre-built codec chains *)
+    [fill_value] enables omission of inner chunks whose elements all equal it
+    (unless [config.write_empty_chunks] is set); without it every in-bounds
+    inner chunk is stored.  [config.domains] > 1 encodes and decodes inner
+    chunks in parallel. *)
 let create_with_chains
-    ~outer_chunk_shape
-    ~inner_chunk_shape
-    ~inner_chain
-    ~index_chain
-    ~index_location
-    ~dtype =
+    ?(config = Codec_intf.default_config) ?fill_value
+    ~outer_chunk_shape ~inner_chunk_shape ~inner_chain ~index_chain ~index_location ~dtype () =
   let chunks_per_dim = inner_chunks_per_shard outer_chunk_shape inner_chunk_shape in
-  let num_inner_chunks = total_inner_chunks outer_chunk_shape inner_chunk_shape in
+  let num_inner_chunks = Array.fold_left ( * ) 1 chunks_per_dim in
+  let ndim = Array.length outer_chunk_shape in
+  let zeros = Array.make ndim 0 in
+  (* The index codecs must be fixed-size, so the encoded size of an all-empty
+     index is the size of every index. *)
+  let index_size = Bytes.length (encode_index index_chain (Array.make num_inner_chunks empty_entry)) in
+  let elide_empty = (not config.write_empty_chunks) && Option.is_some fill_value in
+  let layout_order = morton_order chunks_per_dim in
+  let inner_start i = Array.mapi (fun d c -> c * inner_chunk_shape.(d)) (index_to_inner_coords chunks_per_dim i) in
 
   let encode arr =
-    let ndim = Array.length outer_chunk_shape in
-
-    (* Encode each inner chunk *)
-    let encoded_chunks = Array.make num_inner_chunks Bytes.empty in
-    let index = Array.make num_inner_chunks { offset = empty_marker; nbytes = empty_marker } in
-
-    let current_offset = ref 0L in
-
-    (* Iterate over all inner chunks *)
-    for i = 0 to num_inner_chunks - 1 do
-      let inner_coords = index_to_inner_coords chunks_per_dim i in
-
-      (* Calculate bounds of this inner chunk within the shard *)
-      let inner_start = Array.mapi (fun d c -> c * inner_chunk_shape.(d)) inner_coords in
-      let inner_end = Array.mapi (fun d c ->
-        min ((c + 1) * inner_chunk_shape.(d)) outer_chunk_shape.(d)
-      ) inner_coords in
-      let actual_shape = Array.mapi (fun d _ -> inner_end.(d) - inner_start.(d)) inner_start in
-
-      (* Check if chunk is entirely within bounds *)
-      if Array.for_all (fun s -> s > 0) actual_shape then begin
-        (* Extract inner chunk data *)
-        let chunk_arr = Ndarray.create dtype actual_shape in
-
-        (* Copy data from shard array to chunk array *)
-        let rec copy idx dim =
-          if dim = ndim then begin
-            let src_idx = Array.mapi (fun d j -> inner_start.(d) + j) idx in
-            let value = Ndarray.get arr src_idx in
-            Ndarray.set chunk_arr idx value
-          end else begin
-            for j = 0 to actual_shape.(dim) - 1 do
-              idx.(dim) <- j;
-              copy idx (dim + 1)
-            done
-          end
-        in
-        copy (Array.make ndim 0) 0;
-
-        (* Encode the chunk *)
-        let encoded = encode_chain inner_chain chunk_arr in
-        let nbytes = Int64.of_int (Bytes.length encoded) in
-
-        encoded_chunks.(i) <- encoded;
-        index.(i) <- { offset = !current_offset; nbytes };
-        current_offset := Int64.add !current_offset nbytes
-      end
-    done;
-
-    (* Encode the index *)
-    let encoded_index = encode_index index index_chain in
-    let index_size = Bytes.length encoded_index in
-
-    (* Assemble the shard *)
-    let total_data_size = Int64.to_int !current_offset in
-    let shard_size = match index_location with
-      | IL.Start -> index_size + total_data_size
-      | IL.End -> total_data_size + index_size
+    if Ndarray.shape arr <> outer_chunk_shape then
+      invalid_arg (Printf.sprintf "sharding: expected a shard of shape [%s], got [%s]"
+        (String.concat ";" (Array.to_list (Array.map string_of_int outer_chunk_shape)))
+        (String.concat ";" (Array.to_list (Array.map string_of_int (Ndarray.shape arr)))));
+    (* Stage 1: encode every inner chunk independently (parallel). *)
+    let encoded = Array.make num_inner_chunks None in
+    Parallel.iter ~domains:config.domains num_inner_chunks (fun i ->
+      let chunk = Ndarray.empty dtype inner_chunk_shape in
+      Ndarray.blit ~src:arr ~src_offset:(inner_start i) ~dst:chunk ~dst_offset:zeros ~shape:inner_chunk_shape;
+      let skip = elide_empty && Ndarray.equals_fill chunk (Option.get fill_value) in
+      if not skip then encoded.(i) <- Some (Codec_intf.encode_chain inner_chain chunk));
+    (* Stage 2: lay the chunks out in Morton order and build the index. *)
+    let data_start = match index_location with IL.Start -> index_size | IL.End -> 0 in
+    let index = Array.make num_inner_chunks empty_entry in
+    let data_size =
+      Array.fold_left (fun pos i ->
+        match encoded.(i) with
+        | None -> pos
+        | Some bytes ->
+          let nbytes = Bytes.length bytes in
+          index.(i) <- { offset = Int64.of_int (data_start + pos); nbytes = Int64.of_int nbytes };
+          pos + nbytes
+      ) 0 layout_order
     in
-    let shard = Bytes.create shard_size in
-
-    let data_start = match index_location with
-      | IL.Start -> index_size
-      | IL.End -> 0
-    in
-
-    (* Copy encoded chunks *)
-    let pos = ref data_start in
-    for i = 0 to num_inner_chunks - 1 do
-      if not (is_empty_entry index.(i)) then begin
-        Bytes.blit encoded_chunks.(i) 0 shard !pos (Bytes.length encoded_chunks.(i));
-        pos := !pos + Bytes.length encoded_chunks.(i)
-      end
-    done;
-
-    (* Copy index *)
-    let index_start = match index_location with
-      | IL.Start -> 0
-      | IL.End -> total_data_size
-    in
+    let encoded_index = encode_index index_chain index in
+    let shard = Bytes.create (index_size + data_size) in
+    Array.iteri (fun i chunk ->
+      Option.iter (fun bytes ->
+        Bytes.blit bytes 0 shard (Int64.to_int index.(i).offset) (Bytes.length bytes)) chunk
+    ) encoded;
+    let index_start = match index_location with IL.Start -> 0 | IL.End -> data_size in
     Bytes.blit encoded_index 0 shard index_start index_size;
-
-    (* If index is at start, adjust offsets *)
-    if index_location = IL.Start then begin
-      let adjusted_index = Array.map (fun entry ->
-        if is_empty_entry entry then entry
-        else { entry with offset = Int64.add entry.offset (Int64.of_int index_size) }
-      ) index in
-      let adjusted_encoded = encode_index adjusted_index index_chain in
-      Bytes.blit adjusted_encoded 0 shard 0 index_size
-    end;
-
     shard
   in
 
   let decode shape dtype bytes =
+    if shape <> outer_chunk_shape then
+      raise (Codec_intf.Decode_error "sharding: requested shape differs from the shard shape");
     let shard_size = Bytes.length bytes in
-    let ndim = Array.length shape in
-
-    (* Calculate actual encoded index size by encoding an empty index *)
-    let empty_index = Array.make num_inner_chunks { offset = empty_marker; nbytes = empty_marker } in
-    let encoded_empty = encode_index empty_index index_chain in
-    let index_size = Bytes.length encoded_empty in
-
-    (* Determine index location and decode index *)
-    let index, _data_start = match index_location with
-      | IL.Start ->
-        let index_bytes = Bytes.sub bytes 0 (min index_size shard_size) in
-        (decode_index index_bytes index_chain num_inner_chunks, index_size)
-      | IL.End ->
-        let index_start = max 0 (shard_size - index_size) in
-        let index_bytes = Bytes.sub bytes index_start (shard_size - index_start) in
-        (decode_index index_bytes index_chain num_inner_chunks, 0)
+    if shard_size < index_size then
+      raise (Codec_intf.Decode_error
+        (Printf.sprintf "sharding: shard of %d bytes is smaller than its %d-byte index" shard_size index_size));
+    let index_start = match index_location with IL.Start -> 0 | IL.End -> shard_size - index_size in
+    let index = decode_index index_chain num_inner_chunks (Bytes.sub bytes index_start index_size) in
+    let result =
+      match fill_value with
+      | Some fv -> Ndarray.make dtype shape fv
+      | None -> Ndarray.create dtype shape
     in
-
-    (* Create output array filled with fill value *)
-    let result = Ndarray.create dtype shape in
-
-    (* Decode each inner chunk *)
-    for i = 0 to num_inner_chunks - 1 do
-      let entry = if i < Array.length index then index.(i) else { offset = empty_marker; nbytes = empty_marker } in
+    Parallel.iter ~domains:config.domains num_inner_chunks (fun i ->
+      let entry = index.(i) in
       if not (is_empty_entry entry) then begin
-        let inner_coords = index_to_inner_coords chunks_per_dim i in
-
-        (* Calculate bounds of this inner chunk *)
-        let inner_start = Array.mapi (fun d c -> c * inner_chunk_shape.(d)) inner_coords in
-        let inner_end = Array.mapi (fun d c ->
-          min ((c + 1) * inner_chunk_shape.(d)) shape.(d)
-        ) inner_coords in
-        let actual_shape = Array.mapi (fun d _ -> inner_end.(d) - inner_start.(d)) inner_start in
-
-        if Array.for_all (fun s -> s > 0) actual_shape then begin
-          (* Extract and decode chunk data *)
-          let offset = Int64.to_int entry.offset in
-          let nbytes = Int64.to_int entry.nbytes in
-          if offset >= 0 && offset + nbytes <= shard_size then begin
-            let chunk_bytes = Bytes.sub bytes offset nbytes in
-            let chunk_arr = decode_chain inner_chain actual_shape dtype chunk_bytes in
-
-            (* Copy decoded data to result *)
-            let rec copy idx dim =
-              if dim = ndim then begin
-                let dst_idx = Array.mapi (fun d j -> inner_start.(d) + j) idx in
-                let value = Ndarray.get chunk_arr idx in
-                Ndarray.set result dst_idx value
-              end else begin
-                for j = 0 to actual_shape.(dim) - 1 do
-                  idx.(dim) <- j;
-                  copy idx (dim + 1)
-                done
-              end
-            in
-            copy (Array.make ndim 0) 0
-          end
-        end
-      end
-    done;
-
+        let offset = Int64.to_int entry.offset and nbytes = Int64.to_int entry.nbytes in
+        if offset < 0 || nbytes < 0 || offset + nbytes > shard_size then
+          raise (Codec_intf.Decode_error
+            (Printf.sprintf "sharding: inner chunk %d at offset %d (%d bytes) lies outside the shard" i offset nbytes));
+        let chunk = Codec_intf.decode_chain inner_chain inner_chunk_shape dtype (Bytes.sub bytes offset nbytes) in
+        Ndarray.blit ~src:chunk ~src_offset:zeros ~dst:result ~dst_offset:(inner_start i) ~shape:inner_chunk_shape
+      end);
     result
   in
-
   ({ encode; decode } : Codec_intf.array_to_bytes)

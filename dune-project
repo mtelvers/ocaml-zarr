@@ -66,3 +66,16 @@
   (dune (>= 3.0))
   (zarr (= :version))
   conf-blosc))
+
+(package
+ (name zarr-s3)
+ (synopsis "S3 object store backend for Zarr")
+ (description
+  "A Zarr v3 store on an S3-compatible bucket (AWS S3, Ceph RGW, MinIO) built on the s3 Eio client, with array and group operations instantiated for it.")
+ (depends
+  (ocaml (>= 5.1))
+  (zarr (= :version))
+  s3
+  (eio (>= 1.0))
+  (eio_main :with-test)
+  (alcotest :with-test)))

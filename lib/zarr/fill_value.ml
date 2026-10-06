@@ -66,8 +66,7 @@ module Base64 = struct
 end
 
 (** Parse a fill value from JSON for a given data type *)
-let [@warning "-33"] of_json dtype json =
-  let open Yojson.Safe.Util in
+let of_json dtype json =
   match dtype, json with
   (* Boolean *)
   | D.Bool, `Bool b -> Ok (FV.Bool b)

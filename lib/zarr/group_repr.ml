@@ -51,40 +51,19 @@ module Make (S : STORE_OPS) = struct
   (** Get group path *)
   let path group = group.path
 
-  (** List children (both arrays and groups) *)
+  let dir_prefix path = if path = "" || path = "/" then "" else path ^ "/"
+
+  (** Names of the child arrays and groups: the sub-prefixes of this group
+      that hold a [zarr.json]. *)
   let children group =
-    let dir_path = if group.path = "" || group.path = "/" then "" else group.path ^ "/" in
-    let (files, dirs) = S.list_dir group.store dir_path in
-    let dir_path_len = String.length dir_path in
-
-    (* Filter for zarr.json files and get their parent names *)
-    let from_files = List.filter_map (fun f ->
-      if String.ends_with ~suffix:"/zarr.json" f then
-        let parent = String.sub f 0 (String.length f - String.length "/zarr.json") in
-        if String.contains parent '/' then
-          let idx = String.rindex parent '/' in
-          Some (String.sub parent (idx + 1) (String.length parent - idx - 1))
-        else
-          Some parent
-      else if f = "zarr.json" then
-        None
-      else
-        None
-    ) files in
-
-    (* Extract child names from directories (remove prefix and trailing slash) *)
-    let from_dirs = List.filter_map (fun d ->
-      if String.length d > dir_path_len then
-        let rest = String.sub d dir_path_len (String.length d - dir_path_len) in
-        (* Remove trailing slash if present *)
-        let rest = if String.ends_with ~suffix:"/" rest then
-          String.sub rest 0 (String.length rest - 1)
-        else rest in
-        if rest <> "" then Some rest else None
-      else None
-    ) dirs in
-
-    List.sort_uniq String.compare (from_files @ from_dirs)
+    let dir = dir_prefix group.path in
+    let _, dirs = S.list_dir group.store dir in
+    List.filter_map (fun d ->
+      let name = String.sub d (String.length dir) (String.length d - String.length dir) in
+      let name = Option.value ~default:name (String.(if ends_with ~suffix:"/" name then Some (sub name 0 (length name - 1)) else None)) in
+      if name <> "" && S.exists group.store (dir ^ name ^ "/zarr.json") then Some name else None
+    ) dirs
+    |> List.sort_uniq String.compare
 
   (** Get the metadata path for a child node *)
   let child_meta_path group name =
@@ -169,19 +148,16 @@ module Hierarchy = struct
            with _ -> ())
       ) meta_files
 
-    (** Check if a node exists *)
-    let exists store path =
-      let meta_path = Chunk_key.metadata_path path in
-      S.exists store meta_path
+    (* [walk] reports paths with a leading slash; accept both forms. *)
+    let relative path =
+      if String.starts_with ~prefix:"/" path then String.sub path 1 (String.length path - 1) else path
 
-    (** Delete a node and all its children *)
+    (** Check if a node exists *)
+    let exists store path = S.exists store (Chunk_key.metadata_path (relative path))
+
+    (** Delete a node, its metadata and everything beneath it. *)
     let delete store path =
-      let prefix = if path = "/" then "" else path ^ "/" in
-      S.erase_prefix store prefix;
-      (* Also delete the node's own metadata if not root *)
-      if path <> "/" then begin
-        let meta_path = Chunk_key.metadata_path path in
-        S.erase_prefix store meta_path
-      end
+      let path = relative path in
+      S.erase_prefix store (if path = "" then "" else path ^ "/")
   end
 end

@@ -6,7 +6,7 @@
 
 (** In-memory store using a hash table *)
 type t = {
-  mutable data : (string, bytes) Hashtbl.t;
+  data : (string, bytes) Hashtbl.t;
   mutex : Eio.Mutex.t;
 }
 
@@ -81,11 +81,7 @@ let erase store key =
 let erase_prefix store prefix =
   Eio.Mutex.use_rw ~protect:true store.mutex (fun () ->
     let keys_to_remove = Hashtbl.fold (fun k _ acc ->
-      if String.length k >= String.length prefix &&
-         String.sub k 0 (String.length prefix) = prefix then
-        k :: acc
-      else
-        acc
+      if String.starts_with ~prefix k then k :: acc else acc
     ) store.data [] in
     List.iter (Hashtbl.remove store.data) keys_to_remove
   )
@@ -100,11 +96,7 @@ let list store =
 let list_prefix store prefix =
   Eio.Mutex.use_rw ~protect:true store.mutex (fun () ->
     Hashtbl.fold (fun k _ acc ->
-      if String.length k >= String.length prefix &&
-         String.sub k 0 (String.length prefix) = prefix then
-        k :: acc
-      else
-        acc
+      if String.starts_with ~prefix k then k :: acc else acc
     ) store.data []
   )
 
@@ -116,8 +108,7 @@ let list_dir store prefix =
     let prefixes = ref [] in
 
     Hashtbl.iter (fun k _ ->
-      if String.length k >= prefix_len &&
-         String.sub k 0 prefix_len = prefix then begin
+      if String.starts_with ~prefix k then begin
         let rest = String.sub k prefix_len (String.length k - prefix_len) in
         match String.index_opt rest '/' with
         | None ->

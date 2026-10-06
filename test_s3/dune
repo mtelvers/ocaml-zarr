@@ -1,0 +1,6 @@
+; Integration tests against a live S3-compatible server.  Built here but run
+; manually (see scripts/run-s3-tests.sh): they need a server and credentials,
+; and are skipped unless S3_ENDPOINT is set.
+(executable
+ (name test_s3)
+ (libraries zarr zarr_s3 s3 alcotest eio eio_main))

@@ -86,9 +86,8 @@ let test_group_children () =
   match Memory_group.open_ store ~path:"parent" with
   | Error _ -> fail "should open parent"
   | Ok group ->
-    let children = Memory_group.children group in
-    check bool "has child_array" true (List.mem "child_array" children);
-    check bool "has child_group" true (List.mem "child_group" children)
+    check (list string) "exactly the two children" ["child_array"; "child_group"]
+      (Memory_group.children group)
 
 let test_group_child_type () =
   let store = Memory_store.create () in
@@ -161,7 +160,10 @@ let test_hierarchy_exists () =
   | Ok _ -> ());
 
   check bool "exists" true (Memory_hierarchy.exists store "mygroup");
-  check bool "not exists" false (Memory_hierarchy.exists store "other")
+  check bool "exists with leading slash" true (Memory_hierarchy.exists store "/mygroup");
+  check bool "not exists" false (Memory_hierarchy.exists store "other");
+  Memory_hierarchy.delete store "/mygroup";
+  check bool "deleted" false (Memory_hierarchy.exists store "mygroup")
 
 let tests = [
   "create group", `Quick, test_create_group;

@@ -213,6 +213,70 @@ let () =
   bench_crc32c_codec ();
   bench_transpose_codec ();
   bench_codec_chain ();
-  bench_array_ops ();
+  bench_array_ops ()
 
+module Array = Stdlib.Array  (* [open Zarr] shadows it with the array functor *)
+
+(** {2 Sharding Benchmarks}
+
+    A scaled-down Tessera embeddings shard: int8, inner chunks of
+    (1,128,32,32) = 128 KiB, compressed with zstd.  The real shard is
+    (1,128,4096,4096) with 16384 inner chunks; this one has 256. *)
+
+let shard_shape = [|1; 128; 512; 512|]
+let inner_shape = [|1; 128; 32; 32|]
+
+(* Low-entropy data so the compressor has real work; every third inner chunk
+   is left as fill value (zero) to exercise omission. *)
+let embeddings_like () =
+  let arr = Ndarray.create Int8 shard_shape in
+  let n = Ndarray.numel arr in
+  (match arr with
+   | Ndarray.Int8_signed ga ->
+     let flat = Bigarray.reshape_1 ga n in
+     let row = shard_shape.(3) in
+     for i = 0 to n - 1 do
+       let y = (i / row) mod shard_shape.(2) and x = i mod row in
+       let chunk_id = (y / 32) * (row / 32) + (x / 32) in
+       if chunk_id mod 3 <> 0 then
+         Bigarray.Array1.unsafe_set flat i ((((i * 7919) lsr 7) land 0x1f) - 16)
+     done
+   | _ -> ());
+  arr
+
+let bench_sharding () =
+  Printf.printf "\n=== Sharding (int8 %s, inner %s, zstd) ===\n"
+    (String.concat "x" (Array.to_list (Array.map string_of_int shard_shape)))
+    (String.concat "x" (Array.to_list (Array.map string_of_int inner_shape)));
+  let arr = embeddings_like () in
+  let spec = sharding_codec ~chunk_shape:inner_shape
+      ~codecs:[bytes_codec (); zstd_codec ~level:3 ()] () in
+  let chains = List.filter_map (fun domains ->
+    let config = { Codec.default_config with domains } in
+    match Codec.build_chain ~config ~fill_value:(Int 0L) [spec] Int8 shard_shape with
+    | Ok chain -> Some (domains, chain)
+    | Error _ -> None
+  ) [1; min 8 (Domain.recommended_domain_count ())] in
+  List.iter (fun (domains, chain) ->
+    time_it (Printf.sprintf "shard encode, %d domain(s)" domains) 3 (fun () -> Codec.encode chain arr);
+    let encoded = Codec.encode chain arr in
+    if domains = 1 then
+      Printf.printf "  shard: %d MiB raw -> %d KiB encoded (%d inner chunks, 1/3 omitted)\n"
+        (Ndarray.numel arr / 1024 / 1024) (Bytes.length encoded / 1024)
+        (Codecs.Sharding.total_inner_chunks shard_shape inner_shape);
+    time_it (Printf.sprintf "shard decode, %d domain(s)" domains) 3 (fun () ->
+      Codec.decode chain shard_shape Int8 encoded)
+  ) chains;
+  time_it "to_bytes 32 MiB int8" 10 (fun () -> Ndarray.to_bytes Little arr);
+  let chunk = Ndarray.empty Int8 inner_shape in
+  time_it "blit one inner chunk out" 1000 (fun () ->
+    Ndarray.blit ~src:arr ~src_offset:[|0; 0; 64; 96|] ~dst:chunk ~dst_offset:[|0; 0; 0; 0|] ~shape:inner_shape);
+  time_it "equals_fill on a zero inner chunk" 1000 (fun () ->
+    Ndarray.blit ~src:arr ~src_offset:[|0; 0; 0; 0|] ~dst:chunk ~dst_offset:[|0; 0; 0; 0|] ~shape:inner_shape;
+    Ndarray.equals_fill chunk (Int 0L));
+  time_it "equals_fill on a zero 32 MiB shard" 10 (fun () ->
+    Ndarray.equals_fill (Ndarray.create Int8 shard_shape) (Int 0L))
+
+let () =
+  bench_sharding ();
   Printf.printf "\nDone!\n"

@@ -103,7 +103,7 @@ let sharding_codec ~chunk_shape ?(codecs = [Bytes { endian = Some Endianness.Lit
 (** Create an index slice *)
 let idx i = Index i
 
-(** Create a range slice [start, stop) *)
+(** Create a range slice from [start] (inclusive) to [stop] (exclusive) *)
 let range start stop = Range (start, stop)
 
 (** Create a range slice from start to end *)

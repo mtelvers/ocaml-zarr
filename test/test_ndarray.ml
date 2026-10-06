@@ -135,3 +135,95 @@ let tests = [
   "transpose", `Quick, test_transpose;
   "index conversions", `Quick, test_index_conversions;
 ]
+
+module Array = Stdlib.Array  (* [open Zarr] shadows it with the array functor *)
+
+(* === Block copies, fill-value tests and serialisation of every dtype === *)
+
+let test_blit () =
+  let src = Ndarray.init Int32 [|4; 5|] (fun idx -> `Int32 (Int32.of_int (idx.(0) * 10 + idx.(1)))) in
+  let dst = Ndarray.create Int32 [|3; 3|] in
+  Ndarray.blit ~src ~src_offset:[|1; 2|] ~dst ~dst_offset:[|1; 0|] ~shape:[|2; 3|];
+  check bool "copied block" true
+    (Ndarray.get dst [|1; 0|] = `Int32 12l && Ndarray.get dst [|2; 2|] = `Int32 24l);
+  check bool "untouched row" true (Ndarray.get dst [|0; 0|] = `Int32 0l);
+  check bool "out of bounds raises" true
+    (try Ndarray.blit ~src ~src_offset:[|3; 3|] ~dst ~dst_offset:[|0; 0|] ~shape:[|2; 3|]; false
+     with Invalid_argument _ -> true);
+  (* long rows take the memmove path *)
+  let big = Ndarray.init Float64 [|3; 2000|] (fun idx -> `Float (Float.of_int (idx.(0) * 2000 + idx.(1)))) in
+  let out = Ndarray.create Float64 [|2; 1000|] in
+  Ndarray.blit ~src:big ~src_offset:[|1; 500|] ~dst:out ~dst_offset:[|0; 0|] ~shape:[|2; 1000|];
+  check bool "long row copy" true
+    (Ndarray.get out [|0; 0|] = `Float 2500.0 && Ndarray.get out [|1; 999|] = `Float 5499.0)
+
+let test_blit_strided () =
+  let src = Ndarray.init Int32 [|6; 6|] (fun idx -> `Int32 (Int32.of_int (idx.(0) * 10 + idx.(1)))) in
+  let dst = Ndarray.create Int32 [|2; 3|] in
+  Ndarray.blit_strided ~src ~src_offset:[|1; 0|] ~src_step:[|3; 2|] ~dst ~dst_offset:[|0; 0|] ~shape:[|2; 3|];
+  check bool "gathered" true
+    (Ndarray.get dst [|0; 0|] = `Int32 10l && Ndarray.get dst [|0; 2|] = `Int32 14l
+     && Ndarray.get dst [|1; 1|] = `Int32 42l);
+  let back = Ndarray.create Int32 [|6; 6|] in
+  Ndarray.scatter_strided ~src:dst ~src_offset:[|0; 0|] ~dst:back ~dst_offset:[|1; 0|] ~dst_step:[|3; 2|] ~shape:[|2; 3|];
+  check bool "scattered" true (Ndarray.get back [|4; 4|] = `Int32 44l && Ndarray.get back [|4; 3|] = `Int32 0l)
+
+let test_equals_fill () =
+  let nans = Ndarray.make Float32 [|3; 3|] NaN in
+  check bool "all NaN equals NaN fill" true (Ndarray.equals_fill nans NaN);
+  Ndarray.set nans [|2; 2|] (`Float 1.0);
+  check bool "one non-NaN" false (Ndarray.equals_fill nans NaN);
+  let ints = Ndarray.make Int8 [|4|] (Int (-3L)) in
+  check bool "int8 fill" true (Ndarray.equals_fill ints (Int (-3L)));
+  check bool "int8 other value" false (Ndarray.equals_fill ints (Int 3L));
+  check bool "wrong kind never matches" false (Ndarray.equals_fill ints (Float 0.0));
+  let u = Ndarray.make Uint64 [|2|] (Uint 9L) in
+  check bool "uint64 fill" true (Ndarray.equals_fill u (Uint 9L));
+  let c = Ndarray.make Complex128 [|2|] (Complex (1.0, -1.0)) in
+  check bool "complex fill" true (Ndarray.equals_fill c (Complex (1.0, -1.0)));
+  check bool "empty array is all fill" true (Ndarray.equals_fill (Ndarray.create Int32 [|0|]) (Int 0L))
+
+let test_bytes_roundtrip_all_dtypes () =
+  let dtypes = Ztypes.Dtype.[Bool; Int8; Int16; Int32; Int64; Uint8; Uint16; Uint32; Uint64;
+                            Float16; Float32; Float64; Complex64; Complex128; Raw 8] in
+  List.iter (fun dtype ->
+    let arr = Ndarray.init dtype [|3; 5|] (fun idx ->
+      let k = idx.(0) * 5 + idx.(1) in
+      match Ndarray.empty dtype [|1|] with
+      | Int8_signed _ -> `Int (k - 7)
+      | Int8_unsigned _ | Int16_unsigned _ -> `Int (k * 7)
+      | Int16_signed _ -> `Int (k * 100 - 700)
+      | Int32 _ -> `Int32 (Int32.of_int (k * 100000 - 1))
+      | Int64 _ -> `Int64 (Int64.of_int (k * 1000000007 - 5))
+      | Float32 _ -> `Float (Float.of_int k *. 0.5)
+      | Float64 _ -> `Float (Float.of_int k *. 1.25 -. 3.0)
+      | Complex32 _ | Complex64 _ -> `Complex { Complex.re = Float.of_int k; im = -. Float.of_int k }
+      | Char _ -> `Char (Char.chr (k + 65))) in
+    List.iter (fun endian ->
+      let bytes = Ndarray.to_bytes endian arr in
+      check int (Data_type.to_string dtype ^ " byte length")
+        (15 * Data_type.size (Ndarray.dtype arr)) (Bytes.length bytes);
+      let back = Ndarray.of_bytes dtype endian [|3; 5|] bytes in
+      check bool (Data_type.to_string dtype ^ " roundtrip") true (Ndarray.equal arr back)
+    ) [Little; Big]
+  ) dtypes;
+  check bool "short buffer raises" true
+    (try ignore (Ndarray.of_bytes Int32 Little [|4|] (Bytes.create 15)); false
+     with Invalid_argument _ -> true)
+
+let test_transpose_3d () =
+  let arr = Ndarray.init Int32 [|2; 3; 4|] (fun idx -> `Int32 (Int32.of_int (idx.(0) * 100 + idx.(1) * 10 + idx.(2)))) in
+  let t = Ndarray.transpose arr [|2; 0; 1|] in
+  check (array int) "shape" [|4; 2; 3|] (Ndarray.shape t);
+  for i = 0 to 1 do for j = 0 to 2 do for k = 0 to 3 do
+    check bool "element" true (Ndarray.get t [|k; i; j|] = Ndarray.get arr [|i; j; k|])
+  done done done;
+  check bool "inverse" true (Ndarray.equal arr (Ndarray.transpose t [|1; 2; 0|]))
+
+let tests = tests @ [
+  "blit", `Quick, test_blit;
+  "blit strided", `Quick, test_blit_strided;
+  "equals_fill", `Quick, test_equals_fill;
+  "bytes roundtrip all dtypes", `Quick, test_bytes_roundtrip_all_dtypes;
+  "transpose 3d", `Quick, test_transpose_3d;
+]

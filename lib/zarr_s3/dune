@@ -1,0 +1,4 @@
+(library
+ (name zarr_s3)
+ (public_name zarr-s3)
+ (libraries zarr s3 eio))

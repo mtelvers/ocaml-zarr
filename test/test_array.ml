@@ -206,3 +206,101 @@ let tests = [
   "array with gzip", `Quick, test_array_with_gzip;
   "array attributes", `Quick, test_array_attributes;
 ]
+
+module Array = Stdlib.Array  (* [open Zarr] shadows it with the array functor *)
+
+(* === Edge chunks, empty chunks, stepped and partial slices === *)
+
+let ramp shape =
+  Ndarray.init D.Int32 shape (fun idx ->
+    `Int32 (Int32.of_int (Stdlib.Array.fold_left (fun acc i -> acc * 100 + i) 0 idx + 1)))
+
+let test_edge_chunks_stored_full_size () =
+  let store = Memory_store.create () in
+  match Memory_array.create store ~path:"e" ~shape:[|10; 7|] ~chunks:[|4; 4|] ~dtype:D.Int32 () with
+  | Error _ -> fail "should create array"
+  | Ok arr ->
+    let data = ramp [|10; 7|] in
+    Memory_array.set_slice arr [Zarr.All; Zarr.All] data;
+    check bool "roundtrip" true (Ndarray.equal data (Memory_array.get_slice arr [Zarr.All; Zarr.All]));
+    (* The corner chunk covers only 2x3 elements but is stored at the full 4x4. *)
+    (match Memory_store.get store "e/c/2/1" with
+     | Some b -> check int "edge chunk is full size" (4 * 4 * 4) (Bytes.length b)
+     | None -> fail "edge chunk missing");
+    (match Memory_array.get arr [|9; 6|] with
+     | `Int32 v -> check int32 "last element" 907l v
+     | _ -> fail "expected int32")
+
+let test_all_fill_chunk_not_stored () =
+  let store = Memory_store.create () in
+  match Memory_array.create store ~path:"z" ~shape:[|8; 8|] ~chunks:[|4; 4|] ~dtype:D.Float64
+          ~fill_value:FV.NaN () with
+  | Error _ -> fail "should create array"
+  | Ok arr ->
+    let nans = Ndarray.make D.Float64 [|8; 8|] FV.NaN in
+    Ndarray.set nans [|1; 1|] (`Float 2.5);
+    Memory_array.set_slice arr [Zarr.All; Zarr.All] nans;
+    check bool "chunk with data stored" true (Memory_store.exists store "z/c/0/0");
+    check bool "all-NaN chunk not stored" false (Memory_store.exists store "z/c/1/1");
+    Memory_array.set arr [|1; 1|] (`Float Float.nan);
+    check bool "chunk removed when it becomes all fill" false (Memory_store.exists store "z/c/0/0");
+    let config = { Zarr.Codec.default_config with write_empty_chunks = true } in
+    (match Memory_array.open_ ~config store ~path:"z" with
+     | Error _ -> fail "should reopen"
+     | Ok arr ->
+       Memory_array.set_slice arr [Zarr.Range (4, 8); Zarr.Range (4, 8)] (Ndarray.make D.Float64 [|4; 4|] FV.NaN);
+       check bool "all-fill chunk stored when asked" true (Memory_store.exists store "z/c/1/1"))
+
+let test_stepped_slices () =
+  let store = Memory_store.create () in
+  match Memory_array.create store ~path:"s" ~shape:[|10; 10|] ~chunks:[|3; 4|] ~dtype:D.Int32 () with
+  | Error _ -> fail "should create array"
+  | Ok arr ->
+    let data = ramp [|10; 10|] in
+    Memory_array.set_slice arr [Zarr.All; Zarr.All] data;
+    let sub = Memory_array.get_slice arr [Zarr.Stepped (1, 10, 3); Zarr.Stepped (0, 10, 4)] in
+    check (array int) "stepped shape" [|3; 3|] (Ndarray.shape sub);
+    for i = 0 to 2 do
+      for j = 0 to 2 do
+        check bool (Printf.sprintf "stepped element %d,%d" i j) true
+          (Ndarray.get sub [|i; j|] = Ndarray.get data [|1 + 3 * i; 4 * j|])
+      done
+    done;
+    (* Writing through a stepped slice only touches the selected elements. *)
+    let patch = Ndarray.make D.Int32 [|3; 3|] (FV.Int (-1L)) in
+    Memory_array.set_slice arr [Zarr.Stepped (1, 10, 3); Zarr.Stepped (0, 10, 4)] patch;
+    let all = Memory_array.get_slice arr [Zarr.All; Zarr.All] in
+    for i = 0 to 9 do
+      for j = 0 to 9 do
+        let selected = (i - 1) >= 0 && (i - 1) mod 3 = 0 && j mod 4 = 0 in
+        let expected = if selected then `Int32 (-1l) else Ndarray.get data [|i; j|] in
+        check bool (Printf.sprintf "after stepped write %d,%d" i j) true (Ndarray.get all [|i; j|] = expected)
+      done
+    done
+
+let test_partial_slice_list_and_index () =
+  let store = Memory_store.create () in
+  match Memory_array.create store ~path:"p" ~shape:[|4; 6; 5|] ~chunks:[|2; 2; 2|] ~dtype:D.Int32 () with
+  | Error _ -> fail "should create array"
+  | Ok arr ->
+    let data = ramp [|4; 6; 5|] in
+    Memory_array.set_slice arr [] data;
+    let row = Memory_array.get_slice arr [Zarr.Index 2] in
+    check (array int) "index keeps a unit dimension" [|1; 6; 5|] (Ndarray.shape row);
+    check bool "index values" true (Ndarray.get row [|0; 3; 4|] = Ndarray.get data [|2; 3; 4|]);
+    let tail = Memory_array.get_slice arr [Zarr.RangeFrom 3; Zarr.RangeTo (-2)] in
+    check (array int) "missing trailing slices select everything" [|1; 4; 5|] (Ndarray.shape tail);
+    check bool "invalid slice raises" true
+      (try ignore (Memory_array.get_slice arr [Zarr.Range (3, 3)]); false with Invalid_argument _ -> true);
+    check bool "shape mismatch raises" true
+      (try Memory_array.set_slice arr [Zarr.Index 0] (Ndarray.create D.Int32 [|6; 5|]); false
+       with Invalid_argument _ -> true);
+    Memory_array.delete arr;
+    check int "delete removes metadata and chunks" 0 (Memory_store.length store)
+
+let tests = tests @ [
+  "edge chunks stored full size", `Quick, test_edge_chunks_stored_full_size;
+  "all-fill chunk not stored", `Quick, test_all_fill_chunk_not_stored;
+  "stepped slices", `Quick, test_stepped_slices;
+  "partial slice list and index", `Quick, test_partial_slice_list_and_index;
+]

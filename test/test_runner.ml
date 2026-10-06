@@ -14,6 +14,7 @@ let () =
     ("codecs", Test_codecs.tests);
     ("store_memory", Test_store_memory.tests);
     ("store_filesystem", Test_store_filesystem.tests);
+    ("store_errors", Test_store_errors.tests);
     ("array", Test_array.tests);
     ("group", Test_group.tests);
     ("sharding", Test_sharding.tests);
